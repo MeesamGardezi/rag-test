@@ -15,9 +15,6 @@ openai==1.12.0
 python-dotenv==1.0.1
 python-multipart==0.0.9
 
-# Scheduling
-APScheduler==3.10.4
-
 # Data processing
 pandas>=2.2.0
 numpy>=1.26.0

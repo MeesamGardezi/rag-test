@@ -8,7 +8,6 @@ from contextlib import asynccontextmanager
 from app.database import initialize_firebase, get_chroma_collection
 from app.embedding_service import EmbeddingService
 from app.rag_service import RAGService
-from app.scheduler import start_scheduler
 from app.models import DocumentCreate, QueryRequest, QueryResponse
 
 # Global services
@@ -28,9 +27,6 @@ async def lifespan(app: FastAPI):
     # Initialize services
     embedding_service = EmbeddingService()
     rag_service = RAGService(embedding_service)
-    
-    # Start nightly scheduler
-    start_scheduler()
     
     print("✅ System ready!")
     
@@ -94,11 +90,50 @@ async def search_documents(query: QueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/generate-embeddings")
-async def trigger_embedding_generation(background_tasks: BackgroundTasks):
-    """Manually trigger embedding generation (for testing)"""
+async def trigger_embedding_generation(
+    background_tasks: BackgroundTasks,
+    company_id: Optional[str] = None
+):
+    """Manually trigger embedding generation"""
     try:
-        background_tasks.add_task(rag_service.process_firebase_data)
-        return {"message": "Embedding generation started in background"}
+        async def process_data():
+            return await rag_service.process_firebase_data(company_id)
+        
+        background_tasks.add_task(process_data)
+        return {
+            "message": "Embedding generation started in background",
+            "company_id": company_id or "all_companies"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/generate-embeddings-sync")
+async def trigger_embedding_generation_sync(company_id: Optional[str] = None):
+    """Manually trigger embedding generation (synchronous)"""
+    try:
+        stats = await rag_service.process_firebase_data(company_id)
+        return {
+            "message": "Embedding generation completed",
+            "stats": stats
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/embeddings/clear")
+async def clear_all_embeddings():
+    """Clear all embeddings from ChromaDB"""
+    try:
+        collection = get_chroma_collection()
+        all_data = collection.get()
+        
+        if all_data['ids']:
+            collection.delete(ids=all_data['ids'])
+            return {
+                "message": f"Cleared {len(all_data['ids'])} documents",
+                "cleared_count": len(all_data['ids'])
+            }
+        else:
+            return {"message": "No documents to clear", "cleared_count": 0}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -135,6 +170,15 @@ async def get_available_cost_codes():
     try:
         cost_codes = await rag_service.get_available_cost_codes()
         return {"cost_codes": cost_codes}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/collection-stats")
+async def get_collection_stats():
+    """Get detailed collection statistics"""
+    try:
+        stats = rag_service.get_collection_stats()
+        return stats
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
