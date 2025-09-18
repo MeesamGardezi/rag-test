@@ -98,7 +98,7 @@ def get_chroma_collection():
         initialize_chromadb()
     return chroma_collection
 
-async def fetch_job_data(company_id: str, job_id: str) -> Optional[Dict[str, Any]]:
+async def fetch_job_consumed_data(company_id: str, job_id: str) -> Optional[Dict[str, Any]]:
     """Fetch consumed data for a specific job"""
     try:
         db = get_firebase_db()
@@ -109,20 +109,90 @@ async def fetch_job_data(company_id: str, job_id: str) -> Optional[Dict[str, Any
             data = doc.to_dict()
             data['company_id'] = company_id
             data['job_id'] = job_id
+            data['data_type'] = 'consumed'
             return data
         else:
-            print(f"No data found for company {company_id}, job {job_id}")
+            print(f"No consumed data found for company {company_id}, job {job_id}")
             return None
             
     except Exception as e:
-        print(f"Error fetching job data: {e}")
+        print(f"Error fetching consumed job data: {e}")
         return None
 
-async def fetch_all_job_data(company_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Fetch all job consumed data"""
+async def fetch_job_complete_data(company_id: str, job_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch complete job data including estimate and schedule"""
     try:
         db = get_firebase_db()
-        all_jobs = []
+        job_ref = db.collection('companies').document(company_id).collection('jobs').document(job_id)
+        job_doc = job_ref.get()
+        
+        if not job_doc.exists:
+            print(f"No job found for company {company_id}, job {job_id}")
+            return None
+        
+        job_data = job_doc.to_dict()
+        job_data['company_id'] = company_id
+        job_data['job_id'] = job_id
+        
+        # Also get consumed data if it exists
+        consumed_data = await fetch_job_consumed_data(company_id, job_id)
+        if consumed_data:
+            job_data['consumed_data'] = consumed_data
+        
+        return job_data
+            
+    except Exception as e:
+        print(f"Error fetching complete job data: {e}")
+        return None
+
+def extract_estimate_data(job_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract estimate data from complete job data"""
+    if not job_data or 'estimate' not in job_data:
+        return None
+    
+    estimate_entries = job_data['estimate']
+    if not estimate_entries or not isinstance(estimate_entries, list):
+        return None
+    
+    return {
+        'company_id': job_data['company_id'],
+        'job_id': job_data['job_id'],
+        'job_name': job_data.get('projectTitle', 'Unknown Job'),
+        'data_type': 'estimate',
+        'entries': estimate_entries,
+        'last_updated': job_data.get('createdDate', ''),
+        'project_description': job_data.get('projectDescription', ''),
+        'client_name': job_data.get('clientName', ''),
+        'site_location': f"{job_data.get('siteCity', '')}, {job_data.get('siteState', '')}".strip(', ')
+    }
+
+def extract_schedule_data(job_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract schedule data from complete job data"""
+    if not job_data or 'schedule' not in job_data:
+        return None
+    
+    schedule_entries = job_data['schedule']
+    if not schedule_entries or not isinstance(schedule_entries, list):
+        return None
+    
+    return {
+        'company_id': job_data['company_id'],
+        'job_id': job_data['job_id'],
+        'job_name': job_data.get('projectTitle', 'Unknown Job'),
+        'data_type': 'schedule',
+        'entries': schedule_entries,
+        'last_updated': job_data.get('createdDate', ''),
+        'project_description': job_data.get('projectDescription', ''),
+        'client_name': job_data.get('clientName', ''),
+        'site_location': f"{job_data.get('siteCity', '')}, {job_data.get('siteState', '')}".strip(', '),
+        'schedule_last_updated': job_data.get('scheduleLastUpdated', '')
+    }
+
+async def fetch_all_job_complete_data(company_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Fetch all complete job data including consumed, estimate, and schedule"""
+    try:
+        db = get_firebase_db()
+        all_jobs_data = []
         
         # If company_id is specified, only fetch that company's data
         if company_id:
@@ -142,15 +212,52 @@ async def fetch_all_job_data(company_id: Optional[str] = None) -> List[Dict[str,
             
             for job in jobs:
                 job_id = job.id
+                job_data = job.to_dict()
+                job_data['company_id'] = comp_id
+                job_data['job_id'] = job_id
                 
-                # Try to get consumed data
-                job_data = await fetch_job_data(comp_id, job_id)
-                if job_data and 'entries' in job_data:
-                    all_jobs.append(job_data)
+                # Get consumed data
+                consumed_data = await fetch_job_consumed_data(comp_id, job_id)
+                
+                # Create separate data objects for each type
+                job_datasets = []
+                
+                # Add consumed data if exists
+                if consumed_data and 'entries' in consumed_data:
+                    job_datasets.append(consumed_data)
+                
+                # Add estimate data if exists
+                estimate_data = extract_estimate_data(job_data)
+                if estimate_data:
+                    job_datasets.append(estimate_data)
+                
+                # Add schedule data if exists
+                schedule_data = extract_schedule_data(job_data)
+                if schedule_data:
+                    job_datasets.append(schedule_data)
+                
+                # Add all datasets for this job
+                all_jobs_data.extend(job_datasets)
         
-        print(f"✅ Fetched data for {len(all_jobs)} jobs")
-        return all_jobs
+        print(f"✅ Fetched data for {len(all_jobs_data)} job datasets")
+        return all_jobs_data
         
+    except Exception as e:
+        print(f"❌ Error fetching all job complete data: {e}")
+        return []
+
+# Keep the old function for backward compatibility
+async def fetch_job_data(company_id: str, job_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch consumed data for a specific job (backward compatibility)"""
+    return await fetch_job_consumed_data(company_id, job_id)
+
+async def fetch_all_job_data(company_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Fetch all job consumed data (backward compatibility)"""
+    try:
+        all_complete_data = await fetch_all_job_complete_data(company_id)
+        # Filter to only return consumed data for backward compatibility
+        consumed_data = [data for data in all_complete_data if data.get('data_type') == 'consumed']
+        return consumed_data
     except Exception as e:
         print(f"❌ Error fetching all job data: {e}")
         return []
