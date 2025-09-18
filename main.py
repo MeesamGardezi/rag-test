@@ -5,10 +5,10 @@ from typing import List, Optional, Dict, Any
 import os
 from contextlib import asynccontextmanager
 
-from app.database import initialize_firebase, get_chroma_collection
-from app.embedding_service import EmbeddingService
-from app.rag_service import RAGService
-from app.models import DocumentCreate, QueryRequest, QueryResponse
+from database import initialize_firebase, get_chroma_collection
+from embedding_service import EmbeddingService
+from rag_service import RAGService
+from models import DocumentCreate, QueryRequest, QueryResponse
 
 # Global services
 embedding_service = None
@@ -179,6 +179,100 @@ async def get_collection_stats():
     try:
         stats = rag_service.get_collection_stats()
         return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/test-firebase")
+async def test_firebase_connection():
+    """Test Firebase connection and credentials"""
+    import os
+    try:
+        # Check if environment variables are loaded
+        firebase_config = {
+            "project_id": os.getenv("FIREBASE_PROJECT_ID"),
+            "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
+            "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
+            "has_private_key": bool(os.getenv("FIREBASE_PRIVATE_KEY"))
+        }
+        
+        # Try to get Firebase database
+        db = get_firebase_db()
+        
+        # Try to list companies (just to test permissions)
+        companies_ref = db.collection('companies').limit(1)
+        companies = list(companies_ref.stream())
+        
+        return {
+            "credentials_loaded": firebase_config,
+            "firebase_connected": True,
+            "companies_found": len(companies),
+            "test_successful": True
+        }
+    except Exception as e:
+        return {
+            "credentials_loaded": firebase_config,
+            "firebase_connected": False,
+            "error": str(e),
+            "test_successful": False
+        }
+
+@app.get("/debug-job/{company_id}/{job_id}")
+async def debug_job_processing(company_id: str, job_id: str):
+    """Debug how a specific job is being processed"""
+    from database import fetch_job_data
+    
+    try:
+        # Get raw job data from Firebase
+        raw_job_data = await fetch_job_data(company_id, job_id)
+        
+        if not raw_job_data:
+            return {"error": "Job not found"}
+        
+        # Process it through embedding service
+        text_representation = embedding_service.create_job_text_representation(raw_job_data)
+        metadata = embedding_service.create_metadata(raw_job_data)
+        
+        # Categorize each entry to see what's happening
+        entry_analysis = []
+        total_by_category = {}
+        
+        for entry in raw_job_data.get('entries', []):
+            cost_code = entry.get('costCode', '')
+            amount_str = entry.get('amount', '0')
+            
+            try:
+                amount = float(amount_str) if amount_str else 0.0
+            except (ValueError, TypeError):
+                amount = 0.0
+            
+            category = embedding_service.categorize_cost_code(cost_code)
+            
+            if category not in total_by_category:
+                total_by_category[category] = 0.0
+            total_by_category[category] += amount
+            
+            entry_analysis.append({
+                'cost_code': cost_code,
+                'amount_str': amount_str,
+                'amount_float': amount,
+                'category': category,
+                'job_name': entry.get('job', '')
+            })
+        
+        return {
+            "raw_data": {
+                "total_entries": len(raw_job_data.get('entries', [])),
+                "last_updated": str(raw_job_data.get('lastUpdated', '')),
+                "sample_entries": raw_job_data.get('entries', [])[:5]  # First 5 entries
+            },
+            "processing_analysis": {
+                "category_totals": total_by_category,
+                "entry_breakdown": entry_analysis
+            },
+            "generated_metadata": metadata,
+            "text_representation_preview": text_representation[:500] + "..." if len(text_representation) > 500 else text_representation
+        }
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

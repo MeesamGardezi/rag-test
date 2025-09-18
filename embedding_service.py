@@ -75,58 +75,41 @@ class EmbeddingService:
             return f"Job data processing error: {str(e)}"
     
     def categorize_cost_code(self, cost_code: str) -> str:
-        """Categorize cost codes into logical groups"""
+        """Categorize cost codes with proper priority logic"""
         if not cost_code:
             return "Unknown"
             
         code_lower = cost_code.lower()
         
-        # Material codes (M suffix or Material in name)
-        if 'm ' in code_lower or 'material' in code_lower:
-            return "Materials"
-        
-        # Labor codes (L suffix or Labor in name)  
-        elif 'l ' in code_lower or 'labor' in code_lower:
-            return "Labor"
-        
-        # Subcontractor codes (S suffix or Subcontractor in name)
-        elif 's ' in code_lower or 'subcontractor' in code_lower:
+        # Priority 1: Check for "subcontractor" in the name first
+        if 'subcontractor' in code_lower:
             return "Subcontractors"
         
-        # Other/Overhead codes (O suffix or specific terms)
-        elif 'o ' in code_lower or any(term in code_lower for term in ['permit', 'fee', 'overhead', 'management']):
+        # Priority 2: Check suffix patterns in the code
+        # Look for patterns like "503S", "110O", "414M", "108L"
+        import re
+        suffix_match = re.search(r'\d+([SMLO])\b', cost_code)
+        if suffix_match:
+            suffix = suffix_match.group(1).upper()
+            if suffix == 'S':
+                return "Subcontractors"
+            elif suffix == 'M':
+                return "Materials"
+            elif suffix == 'L':
+                return "Labor"
+            elif suffix == 'O':
+                return "Other/Overhead"
+        
+        # Priority 3: Check for keywords
+        if any(word in code_lower for word in ['material', 'materials']):
+            return "Materials"
+        elif any(word in code_lower for word in ['labor', 'labour']):
+            return "Labor"
+        elif any(word in code_lower for word in ['permit', 'fee', 'overhead', 'management']):
             return "Other/Overhead"
         
-        # Electrical
-        elif any(term in code_lower for term in ['electrical', 'electric', 'wiring']):
-            return "Electrical"
-        
-        # Plumbing
-        elif any(term in code_lower for term in ['plumbing', 'plumb', 'water', 'pipe']):
-            return "Plumbing"
-        
-        # HVAC
-        elif any(term in code_lower for term in ['hvac', 'heating', 'cooling', 'air']):
-            return "HVAC"
-        
-        # Flooring
-        elif any(term in code_lower for term in ['flooring', 'floor', 'carpet', 'tile', 'hardwood']):
-            return "Flooring"
-        
-        # Framing/Structure  
-        elif any(term in code_lower for term in ['framing', 'frame', 'structure', 'beam']):
-            return "Framing/Structure"
-        
-        # Painting
-        elif any(term in code_lower for term in ['paint', 'primer', 'finish']):
-            return "Painting"
-        
-        # Masonry
-        elif any(term in code_lower for term in ['masonry', 'brick', 'stone', 'concrete']):
-            return "Masonry"
-        
-        else:
-            return "Other"
+        # Default fallback
+        return "Other"
     
     def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for a single text"""
@@ -196,18 +179,41 @@ class EmbeddingService:
             except (ValueError, TypeError):
                 continue
         
-        return {
-            'job_name': job_name,
-            'company_id': job_data.get('company_id', ''),
-            'job_id': job_data.get('job_id', ''),
-            'last_updated': job_data.get('lastUpdated', ''),
-            'total_entries': len(entries),
-            'total_cost': total_cost,
-            'categories': list(category_totals.keys()),
-            'category_totals': category_totals,
-            'cost_codes': list(cost_codes)[:50],  # Limit to prevent metadata bloat
+        # Convert lists to strings for ChromaDB compatibility
+        categories_str = ", ".join(category_totals.keys()) if category_totals else ""
+        cost_codes_str = ", ".join(list(cost_codes)[:10])  # Limit to first 10 codes
+        
+        # Handle lastUpdated datetime conversion
+        last_updated = job_data.get('lastUpdated', '')
+        if hasattr(last_updated, 'isoformat'):
+            # Convert datetime object to ISO string
+            last_updated_str = last_updated.isoformat()
+        elif last_updated:
+            # If it's already a string, use it as-is
+            last_updated_str = str(last_updated)
+        else:
+            last_updated_str = ''
+        
+        # Convert category totals to individual metadata fields
+        metadata = {
+            'job_name': str(job_name) if job_name else 'Unknown',
+            'company_id': str(job_data.get('company_id', '')),
+            'job_id': str(job_data.get('job_id', '')),
+            'last_updated': last_updated_str,
+            'total_entries': int(len(entries)),
+            'total_cost': float(total_cost),
+            'categories': categories_str,
+            'cost_codes': cost_codes_str,
             'document_type': 'job_cost_data'
         }
+        
+        # Add individual category totals as separate metadata fields
+        for category, total in category_totals.items():
+            # Replace spaces and special chars with underscores for field names
+            field_name = f"category_{category.lower().replace('/', '_').replace(' ', '_')}_total"
+            metadata[field_name] = float(total)
+        
+        return metadata
     
     def test_embedding(self) -> bool:
         """Test the embedding service with a simple text"""

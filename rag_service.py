@@ -4,9 +4,9 @@ from openai import OpenAI
 from datetime import datetime
 import json
 
-from app.database import get_chroma_collection, fetch_all_job_data, get_firebase_db
-from app.embedding_service import EmbeddingService
-from app.models import DocumentSource
+from database import get_chroma_collection, fetch_all_job_data, get_firebase_db
+from embedding_service import EmbeddingService
+from models import DocumentSource
 
 class RAGService:
     def __init__(self, embedding_service: EmbeddingService):
