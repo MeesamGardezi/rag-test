@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from database import initialize_firebase, get_chroma_collection, fetch_job_complete_data, extract_estimate_data, extract_schedule_data
 from embedding_service import EmbeddingService
 from rag_service import RAGService
-from models import DocumentCreate, QueryRequest, QueryResponse
+from models import DocumentSource, QueryRequest, QueryResponse
 
 # Enhanced models for new functionality
 class EnhancedQueryRequest(BaseModel):
@@ -79,7 +79,7 @@ async def health_check():
     }
 
 @app.post("/documents", response_model=Dict[str, Any])
-async def add_document(document: DocumentCreate):
+async def add_document(document: DocumentSource):
     """Manually add a document (for testing or manual data entry)"""
     try:
         doc_id = await rag_service.add_document(
