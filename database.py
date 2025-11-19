@@ -146,7 +146,7 @@ async def fetch_job_complete_data(company_id: str, job_id: str) -> Optional[Dict
         return None
 
 def extract_estimate_data(job_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Extract estimate data from complete job data"""
+    """Extract estimate data from complete job data with row numbers and enhanced metadata"""
     if not job_data or 'estimate' not in job_data:
         return None
     
@@ -154,12 +154,50 @@ def extract_estimate_data(job_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not estimate_entries or not isinstance(estimate_entries, list):
         return None
     
+    # Add row numbers to each entry (1-indexed for user-friendly queries)
+    entries_with_rows = []
+    for idx, entry in enumerate(estimate_entries, start=1):
+        entry_with_row = entry.copy()
+        entry_with_row['row_number'] = idx
+        entries_with_rows.append(entry_with_row)
+    
     return {
         'company_id': job_data['company_id'],
         'job_id': job_data['job_id'],
         'job_name': job_data.get('projectTitle', 'Unknown Job'),
         'data_type': 'estimate',
-        'entries': estimate_entries,
+        'entries': entries_with_rows,
+        'total_rows': len(entries_with_rows),
+        'last_updated': job_data.get('createdDate', ''),
+        'project_description': job_data.get('projectDescription', ''),
+        'client_name': job_data.get('clientName', ''),
+        'site_location': f"{job_data.get('siteCity', '')}, {job_data.get('siteState', '')}".strip(', '),
+        'estimate_type': job_data.get('estimateType', 'general')
+    }
+
+def extract_flooring_estimate_data(job_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract flooring estimate data from complete job data with row numbers"""
+    if not job_data or 'flooringEstimateData' not in job_data:
+        return None
+    
+    flooring_entries = job_data['flooringEstimateData']
+    if not flooring_entries or not isinstance(flooring_entries, list):
+        return None
+    
+    # Add row numbers to each entry (1-indexed for user-friendly queries)
+    entries_with_rows = []
+    for idx, entry in enumerate(flooring_entries, start=1):
+        entry_with_row = entry.copy()
+        entry_with_row['row_number'] = idx
+        entries_with_rows.append(entry_with_row)
+    
+    return {
+        'company_id': job_data['company_id'],
+        'job_id': job_data['job_id'],
+        'job_name': job_data.get('projectTitle', 'Unknown Job'),
+        'data_type': 'flooring_estimate',
+        'entries': entries_with_rows,
+        'total_rows': len(entries_with_rows),
         'last_updated': job_data.get('createdDate', ''),
         'project_description': job_data.get('projectDescription', ''),
         'client_name': job_data.get('clientName', ''),
@@ -167,7 +205,7 @@ def extract_estimate_data(job_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 def extract_schedule_data(job_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Extract schedule data from complete job data"""
+    """Extract schedule data from complete job data with row numbers"""
     if not job_data or 'schedule' not in job_data:
         return None
     
@@ -175,12 +213,20 @@ def extract_schedule_data(job_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not schedule_entries or not isinstance(schedule_entries, list):
         return None
     
+    # Add row numbers to each entry (1-indexed for user-friendly queries)
+    entries_with_rows = []
+    for idx, entry in enumerate(schedule_entries, start=1):
+        entry_with_row = entry.copy()
+        entry_with_row['row_number'] = idx
+        entries_with_rows.append(entry_with_row)
+    
     return {
         'company_id': job_data['company_id'],
         'job_id': job_data['job_id'],
         'job_name': job_data.get('projectTitle', 'Unknown Job'),
         'data_type': 'schedule',
-        'entries': schedule_entries,
+        'entries': entries_with_rows,
+        'total_rows': len(entries_with_rows),
         'last_updated': job_data.get('createdDate', ''),
         'project_description': job_data.get('projectDescription', ''),
         'client_name': job_data.get('clientName', ''),
@@ -189,7 +235,7 @@ def extract_schedule_data(job_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 async def fetch_all_job_complete_data(company_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Fetch all complete job data including consumed, estimate, and schedule"""
+    """Fetch all complete job data including consumed, estimate, flooring estimate, and schedule"""
     try:
         db = get_firebase_db()
         all_jobs_data = []
@@ -230,6 +276,11 @@ async def fetch_all_job_complete_data(company_id: Optional[str] = None) -> List[
                 estimate_data = extract_estimate_data(job_data)
                 if estimate_data:
                     job_datasets.append(estimate_data)
+                
+                # Add flooring estimate data if exists
+                flooring_estimate_data = extract_flooring_estimate_data(job_data)
+                if flooring_estimate_data:
+                    job_datasets.append(flooring_estimate_data)
                 
                 # Add schedule data if exists
                 schedule_data = extract_schedule_data(job_data)
