@@ -10,13 +10,197 @@ from database import get_chroma_collection, fetch_all_job_complete_data, get_fir
 from embedding_service import EmbeddingService
 from models import DocumentSource
 
+class QueryClassifier:
+    """
+    Micro LLM-based query classification using GPT-3.5-turbo
+    Fast, cheap, and highly accurate query understanding
+    """
+    
+    def __init__(self):
+        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.model = "gpt-3.5-turbo"
+        
+        self.classification_prompt = """You are a construction project query classifier. Analyze the user's question and return ONLY a JSON object with this exact structure:
+
+{
+  "data_type": "consumed" | "estimate" | "schedule" | "flooring_estimate" | "mixed",
+  "confidence": 0.0 to 1.0,
+  "intent": "sum" | "list" | "comparison" | "detail" | "search",
+  "entities": {
+    "row_number": null or integer,
+    "area": null or string,
+    "cost_code": null or string,
+    "job_name": null or string
+  },
+  "reasoning": "brief explanation"
+}
+
+DATA TYPE DEFINITIONS:
+- "consumed": Actual costs SPENT/PAID/USED (keywords: consumed, spent, actual, paid, used, expended, to date, so far, already spent)
+- "estimate": Projected/planned costs (keywords: estimate, estimated, projection, projected, budget, budgeted, planned, forecasted, proposal, quote)
+- "schedule": Timeline/dates/tasks (keywords: schedule, timeline, when, deadline, duration, date, start, finish, complete)
+- "flooring_estimate": Flooring-specific estimates (keywords: flooring, floor, carpet, tile flooring, floor covering)
+- "mixed": Multiple data types explicitly requested (e.g., "compare consumed vs estimate")
+
+INTENT TYPES:
+- "sum": Calculating totals (keywords: total, sum, how much, amount, cost)
+- "list": Showing all items (keywords: list, show, all, what are, show me)
+- "comparison": Comparing items (keywords: vs, versus, compare, difference, compared to)
+- "detail": Getting details (keywords: details, what is, describe, what's in, tell me about)
+- "search": General search/question
+
+CRITICAL RULES:
+1. If user says "spent", "paid", "used", "consumed" = ALWAYS "consumed" data type
+2. If user says "estimate", "estimated", "budget", "budgeted" = ALWAYS "estimate" data type
+3. Past tense (e.g., "what did we spend") = "consumed"
+4. Future/planning tense (e.g., "what will cost") = "estimate"
+5. If asking for BOTH types explicitly = "mixed"
+6. Row numbers: extract any number after "row", "line", "item", "entry"
+
+EXAMPLES:
+
+Question: "What was the total consumed cost for electrical work?"
+Response:
+{
+  "data_type": "consumed",
+  "confidence": 0.98,
+  "intent": "sum",
+  "entities": {"row_number": null, "area": null, "cost_code": "electrical", "job_name": null},
+  "reasoning": "Strong 'consumed' keyword + 'total' indicates sum query on actual spent costs. 'electrical work' is the cost code."
+}
+
+Question: "Show me the estimated cost for plumbing"
+Response:
+{
+  "data_type": "estimate",
+  "confidence": 0.95,
+  "intent": "search",
+  "entities": {"row_number": null, "area": null, "cost_code": "plumbing", "job_name": null},
+  "reasoning": "'estimated cost' clearly indicates projected costs, not actual. Plumbing is the cost code."
+}
+
+Question: "How much did we spend on cleanup?"
+Response:
+{
+  "data_type": "consumed",
+  "confidence": 0.95,
+  "intent": "sum",
+  "entities": {"row_number": null, "area": null, "cost_code": "cleanup", "job_name": null},
+  "reasoning": "'spend' (past tense 'did') indicates actual consumed costs. Cleanup is the cost code."
+}
+
+Question: "What's in estimate row 5?"
+Response:
+{
+  "data_type": "estimate",
+  "confidence": 0.98,
+  "intent": "detail",
+  "entities": {"row_number": 5, "area": null, "cost_code": null, "job_name": null},
+  "reasoning": "Explicitly asks for 'estimate row' details. Row number 5 extracted."
+}
+
+Question: "Compare consumed vs estimated costs for electrical"
+Response:
+{
+  "data_type": "mixed",
+  "confidence": 0.98,
+  "intent": "comparison",
+  "entities": {"row_number": null, "area": null, "cost_code": "electrical", "job_name": null},
+  "reasoning": "Explicitly compares both consumed AND estimated data types. This requires mixed data."
+}
+
+Question: "What are all the subcontractor costs in the budget?"
+Response:
+{
+  "data_type": "estimate",
+  "confidence": 0.90,
+  "intent": "list",
+  "entities": {"row_number": null, "area": null, "cost_code": "subcontractor", "job_name": null},
+  "reasoning": "'budget' indicates estimate data (planned costs), not consumed. 'what are all' is a list query."
+}
+
+Question: "Total spent on kitchen renovation"
+Response:
+{
+  "data_type": "consumed",
+  "confidence": 0.95,
+  "intent": "sum",
+  "entities": {"row_number": null, "area": "kitchen", "cost_code": "renovation", "job_name": null},
+  "reasoning": "'spent' is past tense indicating consumed/actual costs. Kitchen is the area."
+}
+
+Question: "What will the framing cost?"
+Response:
+{
+  "data_type": "estimate",
+  "confidence": 0.90,
+  "intent": "search",
+  "entities": {"row_number": null, "area": null, "cost_code": "framing", "job_name": null},
+  "reasoning": "'will cost' is future tense indicating estimated/planned costs, not yet spent."
+}
+
+Now analyze this question and return ONLY valid JSON:"""
+    
+    def classify_query(self, question: str) -> Dict[str, Any]:
+        """
+        Use GPT-3.5-turbo to classify query with high accuracy
+        Returns structured classification in ~300ms
+        """
+        try:
+            print(f"\n🤖 MICRO LLM CLASSIFICATION (GPT-3.5-turbo):")
+            print(f"   Question: {question}")
+            
+            start_time = datetime.now()
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a precise query classifier. Return only valid JSON. Never add explanatory text outside the JSON."},
+                    {"role": "user", "content": f"{self.classification_prompt}\n\nQuestion: \"{question}\""}
+                ],
+                temperature=0.0,
+                max_tokens=300,
+                response_format={"type": "json_object"}
+            )
+            
+            elapsed = (datetime.now() - start_time).total_seconds() * 1000
+            
+            classification = json.loads(response.choices[0].message.content)
+            
+            print(f"   ✅ Data Type: {classification['data_type']} (confidence: {classification['confidence']:.2f})")
+            print(f"   ✅ Intent: {classification['intent']}")
+            print(f"   ✅ Entities: {classification['entities']}")
+            print(f"   ✅ Reasoning: {classification['reasoning']}")
+            print(f"   ⚡ Classification time: {elapsed:.0f}ms")
+            
+            return classification
+            
+        except Exception as e:
+            print(f"   ❌ Classification failed: {e}")
+            # Fallback to safe defaults
+            return {
+                "data_type": "mixed",
+                "confidence": 0.3,
+                "intent": "search",
+                "entities": {
+                    "row_number": None,
+                    "area": None,
+                    "cost_code": None,
+                    "job_name": None
+                },
+                "reasoning": "Fallback due to classification error"
+            }
+
 class RAGService:
     def __init__(self, embedding_service: EmbeddingService):
         self.embedding_service = embedding_service
         self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.collection = get_chroma_collection()
         
-        # Query preprocessing synonyms and expansions
+        # Initialize micro LLM classifier
+        self.query_classifier = QueryClassifier()
+        
+        # Keyword synonyms for query expansion (backup)
         self.query_synonyms = {
             'cleanup': ['cleanup', 'clean up', 'clean-up', 'cleaning'],
             'electrical': ['electrical', 'electric', 'wiring', 'electrician'],
@@ -45,175 +229,391 @@ class RAGService:
             'staging': ['staging', 'scaffold', 'scaffolding']
         }
     
-    def _preprocess_query(self, question: str) -> Dict[str, Any]:
-        """Preprocess query to extract intent and expand keywords"""
-        question_lower = question.lower()
+    def _extract_keywords_from_entities(self, entities: Dict[str, Any]) -> List[str]:
+        """Extract searchable keywords from LLM-detected entities"""
+        keywords = []
         
-        # Detect query intent
-        intent = {
-            'is_sum_query': any(word in question_lower for word in ['total', 'sum', 'amount', 'cost', 'how much']),
-            'is_comparison': any(word in question_lower for word in ['compare', 'vs', 'versus', 'difference between']),
-            'is_list_query': any(word in question_lower for word in ['show', 'list', 'all', 'what are']),
-            'is_detail_query': any(word in question_lower for word in ['details', 'detail', 'what is in', 'describe']),
-            'is_search_query': True  # Default
-        }
+        if entities.get('cost_code'):
+            code = entities['cost_code']
+            keywords.append(code)
+            # Add synonyms if available
+            if code in self.query_synonyms:
+                keywords.extend(self.query_synonyms[code][:3])
         
-        # Extract keywords and expand them
-        expanded_keywords = set()
-        original_keywords = set()
+        if entities.get('area'):
+            keywords.append(entities['area'])
         
-        words = re.findall(r'\b\w+\b', question_lower)
-        for word in words:
-            if len(word) > 2:  # Skip very short words
-                original_keywords.add(word)
-                
-                # Check if word matches any synonym group
-                for key, synonyms in self.query_synonyms.items():
-                    if word in synonyms or word == key:
-                        expanded_keywords.update(synonyms)
-                        break
+        if entities.get('job_name'):
+            keywords.append(entities['job_name'])
         
-        # Add original keywords to expanded set
-        expanded_keywords.update(original_keywords)
+        return keywords
+    
+    def _filter_results_by_data_type(
+        self,
+        documents: List[str],
+        metadatas: List[Dict],
+        ids: List[str],
+        required_data_type: str,
+        allow_other_types: bool = False
+    ) -> Dict[str, List]:
+        """
+        Post-retrieval filtering to ensure ONLY correct data type
+        This is the safety net that prevents wrong data from reaching GPT-4
+        """
+        filtered_docs = []
+        filtered_metas = []
+        filtered_ids = []
         
-        # Extract specific entities
-        entities = {
-            'row_number': self._extract_row_number(question),
-            'area': self._extract_area_mention(question_lower),
-            'cost_code_hint': self._extract_cost_code_hint(question_lower)
-        }
+        print(f"\n🔍 POST-RETRIEVAL FILTERING:")
+        print(f"   Required data type: {required_data_type}")
+        print(f"   Allow other types: {allow_other_types}")
+        print(f"   Input documents: {len(documents)}")
+        
+        for doc, meta, doc_id in zip(documents, metadatas, ids):
+            doc_data_type = meta.get('data_type', 'unknown')
+            
+            # Handle "mixed" - allow all types
+            if required_data_type == 'mixed':
+                filtered_docs.append(doc)
+                filtered_metas.append(meta)
+                filtered_ids.append(doc_id)
+                print(f"   ✅ KEPT (mixed mode): {doc_data_type}")
+            elif doc_data_type == required_data_type:
+                filtered_docs.append(doc)
+                filtered_metas.append(meta)
+                filtered_ids.append(doc_id)
+                print(f"   ✅ KEPT (exact match): {doc_data_type}")
+            elif allow_other_types:
+                filtered_docs.append(doc)
+                filtered_metas.append(meta)
+                filtered_ids.append(doc_id)
+                print(f"   ⚠️  KEPT (other allowed): {doc_data_type}")
+            else:
+                print(f"   ❌ FILTERED OUT: {doc_data_type}")
+        
+        print(f"   Output documents: {len(filtered_docs)}\n")
         
         return {
-            'original_question': question,
-            'intent': intent,
-            'expanded_keywords': list(expanded_keywords),
-            'original_keywords': list(original_keywords),
-            'entities': entities
+            'documents': filtered_docs,
+            'metadatas': filtered_metas,
+            'ids': filtered_ids
         }
     
-    def _extract_row_number(self, question: str) -> Optional[int]:
-        """Extract row number from query"""
-        patterns = [
-            r'row\s+#?(\d+)',
-            r'line\s+#?(\d+)',
-            r'item\s+#?(\d+)',
-            r'entry\s+#?(\d+)',
-            r'(\d+)(?:st|nd|rd|th)\s+row',
-            r'row\s+number\s+(\d+)',
-        ]
-        
-        question_lower = question.lower()
-        for pattern in patterns:
-            match = re.search(pattern, question_lower)
-            if match:
-                return int(match.group(1))
-        return None
-    
-    def _extract_area_mention(self, question_lower: str) -> Optional[str]:
-        """Extract area mentions from query"""
-        area_keywords = ['house renovations', 'mudroom', 'roof deck', 'kitchen', 'bathroom', 'bedroom']
-        for area in area_keywords:
-            if area in question_lower:
-                return area.title()
-        return None
-    
-    def _extract_cost_code_hint(self, question_lower: str) -> Optional[str]:
-        """Extract cost code hints from query"""
-        # Map common terms to cost code patterns
-        code_hints = {
-            'cleanup': '203',
-            'clean up': '203',
-            'demolition': '205',
-            'demo': '205',
-            'electrical': '503',
-            'plumbing': '508',
-            'framing': '41',
-            'painting': '738',
-            'flooring': '726',
-            'roofing': '420',
-            'cabinet': '704',
-            'tile': '768',
-            'siding': '642'
+    def _prepare_calculation_data(
+        self,
+        metadatas: List[Dict],
+        relevant_chunks: List[str],
+        intent: str
+    ) -> Dict[str, Any]:
+        """
+        Prepare precise calculation data INCLUDING ALL MATCHING ROWS
+        CRITICAL: This must include EVERY row, even duplicates with same cost code
+        """
+        calculation_data = {
+            'items': [],
+            'total_estimated': 0.0,
+            'total_budgeted': 0.0,
+            'total_consumed': 0.0,
+            'total_variance': 0.0,
+            'row_level_items': [],
+            'job_level_items': [],
+            'data_sources': set()
         }
         
-        for term, code in code_hints.items():
-            if term in question_lower:
-                return code
-        return None
-    
-    def _fuzzy_match_score(self, s1: str, s2: str) -> float:
-        """Calculate fuzzy match score between two strings"""
-        return SequenceMatcher(None, s1.lower(), s2.lower()).ratio()
-    
-    def _keyword_search_metadata(self, keywords: List[str], all_metadatas: List[Dict], all_docs: List[str]) -> List[Tuple[int, float]]:
-        """Search metadata fields for keyword matches and return (index, score) tuples"""
-        matches = []
+        # Track which jobs have row-level data to prevent double counting
+        jobs_with_rows = set()
         
-        for idx, (metadata, doc_text) in enumerate(zip(all_metadatas, all_docs)):
-            score = 0.0
-            matches_found = []
+        for metadata in metadatas:
+            granularity = metadata.get('granularity', 'unknown')
+            data_type = metadata.get('data_type', 'unknown')
+            job_id = metadata.get('job_id', '')
             
-            # Search in key fields
-            searchable_fields = [
-                metadata.get('cost_code', ''),
-                metadata.get('costCode', ''),
-                metadata.get('description', ''),
-                metadata.get('task_scope', ''),
-                metadata.get('area', ''),
-                doc_text
-            ]
-            
-            searchable_text = ' '.join(str(field) for field in searchable_fields).lower()
-            
-            # Check each keyword
-            for keyword in keywords:
-                keyword_lower = keyword.lower()
-                
-                # Exact match in text
-                if keyword_lower in searchable_text:
-                    score += 2.0
-                    matches_found.append(keyword)
-                
-                # Fuzzy match on cost codes (more lenient)
-                cost_code = str(metadata.get('cost_code', '')).lower()
-                if cost_code and self._fuzzy_match_score(keyword_lower, cost_code) > 0.6:
-                    score += 1.5
-                    matches_found.append(f"fuzzy:{keyword}")
-                
-                # Partial match (word boundary)
-                if re.search(r'\b' + re.escape(keyword_lower), searchable_text):
-                    score += 1.0
-            
-            # Bonus for matching multiple keywords
-            if len(matches_found) > 1:
-                score *= 1.2
-            
-            if score > 0:
-                matches.append((idx, score))
+            if granularity == 'row' and data_type in ['estimate', 'flooring_estimate']:
+                jobs_with_rows.add(job_id)
         
-        # Sort by score descending
-        matches.sort(key=lambda x: x[1], reverse=True)
-        return matches
+        print(f"\n💰 PREPARING CALCULATION DATA:")
+        print(f"   Total metadata items to process: {len(metadatas)}")
+        
+        # Process EVERY item - DO NOT skip duplicates
+        for idx, (metadata, chunk) in enumerate(zip(metadatas, relevant_chunks), 1):
+            data_type = metadata.get('data_type', 'unknown')
+            granularity = metadata.get('granularity', 'unknown')
+            job_id = metadata.get('job_id', '')
+            job_name = metadata.get('job_name', 'Unknown')
+            
+            calculation_data['data_sources'].add(data_type)
+            
+            # ESTIMATE ROW LEVEL DATA - Include ALL rows
+            if data_type == 'estimate' and granularity == 'row':
+                row_num = metadata.get('row_number', '?')
+                area = metadata.get('area', '')
+                task_scope = metadata.get('task_scope', '')
+                cost_code = metadata.get('cost_code', metadata.get('costCode', ''))
+                description = metadata.get('description', '')[:100]
+                
+                estimated = float(metadata.get('total', 0))
+                budgeted = float(metadata.get('budgeted_total', 0))
+                variance = float(metadata.get('variance', 0))
+                
+                qty = float(metadata.get('qty', 0))
+                rate = float(metadata.get('rate', 0))
+                units = metadata.get('units', '')
+                is_allowance = metadata.get('is_allowance', False)
+                
+                item = {
+                    'type': 'estimate_row',
+                    'job_name': job_name,
+                    'row_number': row_num,
+                    'area': area,
+                    'task_scope': task_scope,
+                    'cost_code': cost_code,
+                    'description': description,
+                    'estimated': estimated,
+                    'budgeted': budgeted,
+                    'variance': variance,
+                    'qty': qty,
+                    'rate': rate,
+                    'units': units,
+                    'is_allowance': is_allowance
+                }
+                
+                calculation_data['row_level_items'].append(item)
+                calculation_data['total_estimated'] += estimated
+                calculation_data['total_budgeted'] += budgeted
+                calculation_data['total_variance'] += variance
+                calculation_data['items'].append(item)
+                
+                print(f"   [{idx}] INCLUDED Row #{row_num}: {cost_code} = ${estimated:,.2f}")
+            
+            # FLOORING ESTIMATE ROW LEVEL DATA - Include ALL rows
+            elif data_type == 'flooring_estimate' and granularity == 'row':
+                row_num = metadata.get('row_number', '?')
+                item_name = metadata.get('item_material_name', '')
+                vendor = metadata.get('vendor', '')
+                
+                cost = float(metadata.get('total_cost', 0))
+                sale = float(metadata.get('sale_price', 0))
+                profit = float(metadata.get('profit', 0))
+                
+                qty = float(metadata.get('measured_qty', 0))
+                unit = metadata.get('unit', '')
+                
+                item = {
+                    'type': 'flooring_row',
+                    'job_name': job_name,
+                    'row_number': row_num,
+                    'item_name': item_name,
+                    'vendor': vendor,
+                    'cost': cost,
+                    'sale': sale,
+                    'profit': profit,
+                    'qty': qty,
+                    'unit': unit
+                }
+                
+                calculation_data['row_level_items'].append(item)
+                calculation_data['total_estimated'] += sale
+                calculation_data['items'].append(item)
+                
+                print(f"   [{idx}] INCLUDED Flooring Row #{row_num}: {item_name} = ${sale:,.2f}")
+            
+            # CONSUMED DATA (job-level only)
+            elif data_type == 'consumed' and granularity == 'job':
+                consumed = float(metadata.get('total_cost', 0))
+                categories = metadata.get('categories', '')
+                
+                item = {
+                    'type': 'consumed_summary',
+                    'job_name': job_name,
+                    'consumed': consumed,
+                    'categories': categories
+                }
+                
+                calculation_data['job_level_items'].append(item)
+                calculation_data['total_consumed'] += consumed
+                calculation_data['items'].append(item)
+                
+                print(f"   [{idx}] INCLUDED Consumed: {job_name} = ${consumed:,.2f}")
+            
+            # JOB-LEVEL ESTIMATES (only if no row data exists - prevents double counting)
+            elif granularity == 'job' and job_id not in jobs_with_rows:
+                if data_type == 'estimate':
+                    estimated = float(metadata.get('total_estimated_cost', 0))
+                    budgeted = float(metadata.get('total_budgeted_cost', 0))
+                    variance = float(metadata.get('budget_variance', 0))
+                    
+                    item = {
+                        'type': 'estimate_summary',
+                        'job_name': job_name,
+                        'estimated': estimated,
+                        'budgeted': budgeted,
+                        'variance': variance,
+                        'total_rows': metadata.get('total_rows', 0)
+                    }
+                    
+                    calculation_data['job_level_items'].append(item)
+                    calculation_data['total_estimated'] += estimated
+                    calculation_data['total_budgeted'] += budgeted
+                    calculation_data['total_variance'] += variance
+                    calculation_data['items'].append(item)
+                    
+                    print(f"   [{idx}] INCLUDED Estimate Summary: {job_name} = ${estimated:,.2f}")
+        
+        print(f"\n   ✅ TOTAL ITEMS INCLUDED: {len(calculation_data['items'])}")
+        print(f"   ✅ Row-level items: {len(calculation_data['row_level_items'])}")
+        print(f"   ✅ Job-level items: {len(calculation_data['job_level_items'])}")
+        print(f"   💵 GRAND TOTAL ESTIMATED: ${calculation_data['total_estimated']:,.2f}")
+        print(f"   💵 GRAND TOTAL BUDGETED: ${calculation_data['total_budgeted']:,.2f}")
+        print(f"   💵 GRAND TOTAL CONSUMED: ${calculation_data['total_consumed']:,.2f}\n")
+        
+        calculation_data['data_sources'] = list(calculation_data['data_sources'])
+        return calculation_data
+    
+    def _format_calculation_context(self, calc_data: Dict[str, Any]) -> str:
+        """Format calculation data into crystal-clear context for GPT-4"""
+        context_parts = []
+        
+        context_parts.append("=" * 80)
+        context_parts.append("PRECISE CALCULATION DATA - ALL MATCHING ROWS INCLUDED")
+        context_parts.append("=" * 80)
+        
+        context_parts.append("\n📊 GRAND TOTALS (sum of ALL items below):")
+        
+        if calc_data['total_estimated'] > 0 or calc_data['total_budgeted'] > 0:
+            context_parts.append(f"  • Total Estimated:  ${calc_data['total_estimated']:,.2f}")
+            context_parts.append(f"  • Total Budgeted:   ${calc_data['total_budgeted']:,.2f}")
+            context_parts.append(f"  • Variance:         ${calc_data['total_variance']:,.2f}")
+        
+        if calc_data['total_consumed'] > 0:
+            context_parts.append(f"  • Total Consumed (ACTUAL SPENT):   ${calc_data['total_consumed']:,.2f}")
+        
+        context_parts.append(f"\n  • Number of Items:  {len(calc_data['items'])}")
+        context_parts.append(f"  • Data Sources:     {', '.join(calc_data['data_sources'])}")
+        
+        # ROW-LEVEL ESTIMATE ITEMS - Show ALL rows
+        if calc_data['row_level_items']:
+            estimate_rows = [item for item in calc_data['row_level_items'] if item['type'] == 'estimate_row']
+            flooring_rows = [item for item in calc_data['row_level_items'] if item['type'] == 'flooring_row']
+            
+            if estimate_rows:
+                context_parts.append(f"\n\n{'=' * 80}")
+                context_parts.append(f"📋 ESTIMATE - ALL {len(estimate_rows)} MATCHING ROWS")
+                context_parts.append("=" * 80)
+                context_parts.append("IMPORTANT: Sum ALL rows below for the total")
+                
+                for item in estimate_rows:
+                    context_parts.append(f"\n🔹 ROW #{item['row_number']}: {item['job_name']}")
+                    context_parts.append(f"   Area: {item['area']}")
+                    context_parts.append(f"   Task: {item['task_scope']}")
+                    context_parts.append(f"   Cost Code: {item['cost_code']}")
+                    if item['description']:
+                        context_parts.append(f"   Description: {item['description']}")
+                    
+                    if item['is_allowance']:
+                        context_parts.append(f"   ⚠️  TYPE: ALLOWANCE")
+                    
+                    context_parts.append(f"\n   💰 COSTS:")
+                    if item['units']:
+                        context_parts.append(f"      Quantity: {item['qty']:,.2f} {item['units']}")
+                        context_parts.append(f"      Rate: ${item['rate']:,.2f} per {item['units']}")
+                    
+                    context_parts.append(f"      ➡️  Estimated Total:  ${item['estimated']:,.2f}")
+                    context_parts.append(f"      Budgeted Total:   ${item['budgeted']:,.2f}")
+                    context_parts.append(f"      Variance:         ${item['variance']:,.2f}")
+            
+            if flooring_rows:
+                context_parts.append(f"\n\n{'=' * 80}")
+                context_parts.append(f"🏠 FLOORING ESTIMATE - ALL {len(flooring_rows)} MATCHING ROWS")
+                context_parts.append("=" * 80)
+                context_parts.append("IMPORTANT: Sum ALL rows below for the total")
+                
+                for item in flooring_rows:
+                    context_parts.append(f"\n🔹 ROW #{item['row_number']}: {item['job_name']}")
+                    context_parts.append(f"   Item: {item['item_name']}")
+                    context_parts.append(f"   Vendor: {item['vendor']}")
+                    context_parts.append(f"   Quantity: {item['qty']:,.2f} {item['unit']}")
+                    context_parts.append(f"\n   💰 PRICING:")
+                    context_parts.append(f"      Cost Price:  ${item['cost']:,.2f}")
+                    context_parts.append(f"      ➡️  Sale Price:  ${item['sale']:,.2f}")
+                    context_parts.append(f"      Profit:      ${item['profit']:,.2f}")
+        
+        # JOB-LEVEL SUMMARIES
+        if calc_data['job_level_items']:
+            context_parts.append(f"\n\n{'=' * 80}")
+            context_parts.append(f"📊 JOB-LEVEL SUMMARIES ({len(calc_data['job_level_items'])} jobs)")
+            context_parts.append("=" * 80)
+            
+            for item in calc_data['job_level_items']:
+                context_parts.append(f"\n🏗️  {item['job_name']}")
+                
+                if item['type'] == 'estimate_summary':
+                    context_parts.append(f"   Type: ESTIMATE (Projected Costs)")
+                    context_parts.append(f"   Total Rows: {item['total_rows']}")
+                    context_parts.append(f"   Estimated:  ${item['estimated']:,.2f}")
+                    context_parts.append(f"   Budgeted:   ${item['budgeted']:,.2f}")
+                    context_parts.append(f"   Variance:   ${item['variance']:,.2f}")
+                
+                elif item['type'] == 'consumed_summary':
+                    context_parts.append(f"   Type: CONSUMED (Actual Spent)")
+                    context_parts.append(f"   ➡️  Total Consumed:   ${item['consumed']:,.2f}")
+                    context_parts.append(f"   Categories: {item['categories']}")
+        
+        context_parts.append("\n" + "=" * 80)
+        
+        return "\n".join(context_parts)
     
     async def query(self, question: str, n_results: int = 10, data_types: Optional[List[str]] = None) -> Dict[str, Any]:
         """
-        Enhanced hybrid query with:
-        - Query preprocessing and expansion
-        - Vector search (semantic)
-        - Keyword search (metadata)
-        - Fuzzy matching
-        - Smart aggregation
+        SUPER SMART query processing with micro LLM classification
+        RETRIEVES ALL MATCHING ROWS for accurate calculations
         """
         try:
-            print(f"🔍 Processing query: {question}")
+            print(f"\n{'='*80}")
+            print(f"🔍 PROCESSING QUERY: {question}")
+            print(f"{'='*80}")
             
-            # Step 1: Preprocess query
-            query_info = self._preprocess_query(question)
-            print(f"📝 Query intent: {query_info['intent']}")
-            print(f"🔑 Keywords: {query_info['original_keywords']}")
-            print(f"🔄 Expanded: {query_info['expanded_keywords'][:5]}...")  # Show first 5
+            # STEP 1: Use micro LLM to classify query (GPT-3.5-turbo)
+            classification = self.query_classifier.classify_query(question)
             
-            # Step 2: Get all documents for keyword search fallback
+            detected_data_type = classification['data_type']
+            confidence = classification['confidence']
+            intent = classification['intent']
+            entities = classification['entities']
+            
+            # STEP 2: Determine filtering strategy based on confidence
+            forced_data_types = None
+            should_filter_strictly = False
+            
+            # For sum queries, we need to retrieve MORE results to get all matching rows
+            if intent == 'sum':
+                retrieval_multiplier = 5  # Get 5x more results for sum queries
+                print(f"\n💡 SUM QUERY DETECTED - Retrieving {retrieval_multiplier}x more results to ensure ALL matching rows are included\n")
+            else:
+                retrieval_multiplier = 2
+            
+            if confidence >= 0.7 and detected_data_type != 'mixed':
+                # High confidence - FORCE filter to detected type
+                forced_data_types = [detected_data_type]
+                should_filter_strictly = True
+                print(f"\n🔒 HIGH CONFIDENCE ({confidence:.2f}) - FORCING FILTER: {forced_data_types}\n")
+            elif data_types:
+                # Use user-provided data types
+                forced_data_types = data_types
+                should_filter_strictly = True
+                print(f"\n🔒 USING PROVIDED DATA TYPES: {forced_data_types}\n")
+            else:
+                print(f"\n🔓 LOW CONFIDENCE ({confidence:.2f}) - ALLOWING MIXED RESULTS\n")
+            
+            # STEP 3: Extract keywords from entities
+            search_keywords = self._extract_keywords_from_entities(entities)
+            print(f"🔑 Search keywords: {search_keywords}")
+            
+            # Extract row number filter if detected
+            row_number_filter = entities.get('row_number')
+            if row_number_filter:
+                print(f"🔢 Row number filter: {row_number_filter}")
+            
+            # Get all documents
             all_data = self.collection.get()
             all_metadatas = all_data.get('metadatas', [])
             all_documents = all_data.get('documents', [])
@@ -225,79 +625,83 @@ class RAGService:
                     "sources": [],
                     "chunks": [],
                     "data_types_found": [],
-                    "row_numbers_found": []
+                    "row_numbers_found": [],
+                    "classification": classification
                 }
             
-            # Step 3: Multi-strategy retrieval
+            # STEP 4: Build enhanced query with extracted keywords
+            enhanced_query = question
+            if search_keywords:
+                enhanced_query = question + " " + " ".join(search_keywords[:5])
             
-            # Strategy 1: Vector search with expanded query
-            expanded_query = question
-            if query_info['expanded_keywords']:
-                # Add expanded keywords to help vector search
-                expanded_query = question + " " + " ".join(query_info['expanded_keywords'][:5])
-            
-            # Build filter
+            # Build ChromaDB filter
             query_filter = self._build_query_filter(
-                data_types=data_types,
-                row_number=query_info['entities']['row_number'],
-                is_allowance=self._detect_allowance_query(question),
-                has_materials='material' in question.lower()
+                data_types=forced_data_types,
+                row_number=row_number_filter
             )
             
-            # Try vector search with lower threshold (get more results)
-            vector_results_count = min(n_results * 2, 50)  # Get more candidates
+            # STEP 5: Vector search with INCREASED results to get ALL matching rows
+            vector_results_count = min(n_results * retrieval_multiplier * 3, 200)  # Get up to 200 results
+            print(f"📊 Requesting {vector_results_count} results to ensure ALL matching rows are retrieved")
             
             try:
                 vector_results = self.collection.query(
-                    query_texts=[expanded_query],
+                    query_texts=[enhanced_query],
                     n_results=vector_results_count,
                     where=query_filter
                 )
+                print(f"📊 Vector search returned: {len(vector_results['documents'][0]) if vector_results['documents'] else 0} results")
             except Exception as e:
                 print(f"⚠️ Vector search failed: {e}")
                 vector_results = {'documents': [[]], 'metadatas': [[]], 'distances': [[]], 'ids': [[]]}
             
-            # Strategy 2: Keyword search on metadata
-            print(f"🔎 Performing keyword search on {len(all_metadatas)} documents...")
-            keyword_matches = self._keyword_search_metadata(
-                query_info['expanded_keywords'],
-                all_metadatas,
-                all_documents
-            )
+            # STEP 6: Get results from vector search
+            results = {
+                'documents': vector_results['documents'][0] if vector_results['documents'] else [],
+                'metadatas': vector_results['metadatas'][0] if vector_results['metadatas'] else [],
+                'ids': vector_results['ids'][0] if vector_results['ids'] else []
+            }
             
-            print(f"📊 Vector results: {len(vector_results['documents'][0])}, Keyword matches: {len(keyword_matches)}")
+            # STEP 7: POST-FILTER - Critical safety layer
+            if should_filter_strictly and detected_data_type != 'mixed':
+                print(f"\n🚨 APPLYING STRICT POST-FILTER 🚨")
+                results = self._filter_results_by_data_type(
+                    results['documents'],
+                    results['metadatas'],
+                    results['ids'],
+                    required_data_type=detected_data_type,
+                    allow_other_types=False  # STRICT MODE
+                )
             
-            # Step 4: Combine and deduplicate results
-            combined_results = self._combine_search_results(
-                vector_results,
-                keyword_matches,
-                all_ids,
-                all_documents,
-                all_metadatas,
-                n_results=n_results
-            )
+            # CRITICAL: For sum queries, DON'T limit results - include ALL matching rows
+            if intent == 'sum':
+                relevant_chunks = results['documents']  # ALL results, no limiting
+                metadatas = results['metadatas']  # ALL metadata, no limiting
+                print(f"\n✅ SUM QUERY: Including ALL {len(relevant_chunks)} results for accurate calculation\n")
+            else:
+                # For non-sum queries, limit to requested number
+                relevant_chunks = results['documents'][:n_results * retrieval_multiplier]
+                metadatas = results['metadatas'][:n_results * retrieval_multiplier]
+                print(f"\n✅ NON-SUM QUERY: Limited to {len(relevant_chunks)} results\n")
             
-            if not combined_results['documents']:
+            if not relevant_chunks:
                 return {
-                    "answer": f"I searched for information about '{question}' but couldn't find any matching data. The keywords I looked for were: {', '.join(query_info['original_keywords'])}. Please try rephrasing your question or check if the data has been embedded.",
+                    "answer": f"I detected you're asking about '{detected_data_type}' data with {confidence:.0%} confidence, but couldn't find any matching results. This data type may not be available in the system yet.",
                     "sources": [],
                     "chunks": [],
                     "data_types_found": [],
-                    "row_numbers_found": []
+                    "row_numbers_found": [],
+                    "classification": classification
                 }
             
-            # Step 5: Analyze results
-            relevant_chunks = combined_results['documents']
-            metadatas = combined_results['metadatas']
+            print(f"✅ Final results to process: {len(relevant_chunks)}")
             
-            print(f"✅ Found {len(relevant_chunks)} relevant results")
-            
+            # Analyze results
             data_types_found = set()
             document_types_found = set()
             row_numbers_found = set()
             granularities_found = set()
             
-            # Create sources list
             sources = []
             for metadata in metadatas:
                 data_type = metadata.get('data_type', 'unknown')
@@ -320,10 +724,13 @@ class RAGService:
                 )
                 sources.append(source)
             
-            # Step 6: Generate intelligent answer
+            print(f"📈 Data types in results: {data_types_found}")
+            print(f"📈 Row-level documents: {len([m for m in metadatas if m.get('granularity') == 'row'])}")
+            
+            # STEP 8: Generate intelligent answer with classification awareness
             answer = await self._generate_intelligent_answer(
                 question=question,
-                query_info=query_info,
+                classification=classification,
                 relevant_chunks=relevant_chunks,
                 metadatas=metadatas
             )
@@ -335,7 +742,8 @@ class RAGService:
                 "data_types_found": list(data_types_found),
                 "document_types_found": list(document_types_found),
                 "granularities_found": list(granularities_found),
-                "row_numbers_found": sorted(list(row_numbers_found)) if row_numbers_found else []
+                "row_numbers_found": sorted(list(row_numbers_found)) if row_numbers_found else [],
+                "classification": classification
             }
             
         except Exception as e:
@@ -344,186 +752,122 @@ class RAGService:
             traceback.print_exc()
             raise
     
-    def _combine_search_results(
-        self,
-        vector_results: Dict,
-        keyword_matches: List[Tuple[int, float]],
-        all_ids: List[str],
-        all_documents: List[str],
-        all_metadatas: List[Dict],
-        n_results: int = 10
-    ) -> Dict[str, List]:
-        """Combine vector and keyword search results, deduplicate, and rank"""
-        
-        # Track results by ID to avoid duplicates
-        results_map = {}
-        
-        # Add vector results
-        if vector_results['documents'] and vector_results['documents'][0]:
-            for i, (doc, metadata, distance, doc_id) in enumerate(zip(
-                vector_results['documents'][0],
-                vector_results['metadatas'][0],
-                vector_results['distances'][0],
-                vector_results['ids'][0]
-            )):
-                # Convert distance to similarity score (lower distance = higher similarity)
-                vector_score = 1.0 / (1.0 + distance)
-                
-                results_map[doc_id] = {
-                    'document': doc,
-                    'metadata': metadata,
-                    'vector_score': vector_score,
-                    'keyword_score': 0.0,
-                    'combined_score': vector_score * 0.7  # 70% weight to vector
-                }
-        
-        # Add keyword results
-        for idx, keyword_score in keyword_matches[:50]:  # Top 50 keyword matches
-            doc_id = all_ids[idx]
-            normalized_keyword_score = min(keyword_score / 10.0, 1.0)  # Normalize to 0-1
-            
-            if doc_id in results_map:
-                # Update existing result
-                results_map[doc_id]['keyword_score'] = normalized_keyword_score
-                results_map[doc_id]['combined_score'] += normalized_keyword_score * 0.3  # 30% weight to keywords
-            else:
-                # Add new result from keyword search
-                results_map[doc_id] = {
-                    'document': all_documents[idx],
-                    'metadata': all_metadatas[idx],
-                    'vector_score': 0.0,
-                    'keyword_score': normalized_keyword_score,
-                    'combined_score': normalized_keyword_score * 0.3
-                }
-        
-        # Sort by combined score
-        sorted_results = sorted(
-            results_map.items(),
-            key=lambda x: x[1]['combined_score'],
-            reverse=True
-        )[:n_results]
-        
-        # Format output
-        return {
-            'documents': [r[1]['document'] for r in sorted_results],
-            'metadatas': [r[1]['metadata'] for r in sorted_results],
-            'ids': [r[0] for r in sorted_results]
-        }
-    
     async def _generate_intelligent_answer(
         self,
         question: str,
-        query_info: Dict[str, Any],
+        classification: Dict[str, Any],
         relevant_chunks: List[str],
         metadatas: List[Dict]
     ) -> str:
-        """Generate intelligent answer based on query intent"""
+        """Generate answer with classification-aware context"""
         
         try:
-            intent = query_info['intent']
+            intent = classification['intent']
+            detected_type = classification['data_type']
+            confidence = classification['confidence']
             
-            # Build context with smart formatting
-            context_parts = []
+            # Data type context for GPT-4
+            type_context = f"\n🎯 DETECTED: User is asking about {detected_type.upper()} data (confidence: {confidence:.0%})\n"
             
-            # If it's a sum/amount query, prepare data for calculation
-            if intent['is_sum_query']:
-                context_parts.append("=== COST DATA FOR CALCULATION ===")
-                total_amount = 0.0
-                items_for_calculation = []
+            # Build instruction based on intent
+            if intent == 'sum':
+                calc_data = self._prepare_calculation_data(metadatas, relevant_chunks, intent)
+                context = self._format_calculation_context(calc_data)
                 
-                for metadata, chunk in zip(metadatas, relevant_chunks):
-                    # Extract amounts from metadata
-                    amount_fields = ['total', 'total_cost', 'sale_price', 'budgeted_total']
-                    for field in amount_fields:
-                        if field in metadata and metadata[field]:
-                            try:
-                                amount = float(metadata[field])
-                                total_amount += amount
-                                
-                                cost_code = metadata.get('cost_code', metadata.get('costCode', 'Unknown'))
-                                description = metadata.get('description', '')[:80]
-                                row_num = metadata.get('row_number', '')
-                                
-                                item_info = f"Row {row_num}: {cost_code} - ${amount:,.2f}"
-                                if description:
-                                    item_info += f" ({description})"
-                                
-                                items_for_calculation.append(item_info)
-                                break
-                            except (ValueError, TypeError):
-                                continue
-                
-                context_parts.append(f"TOTAL AMOUNT: ${total_amount:,.2f}")
-                context_parts.append(f"NUMBER OF ITEMS: {len(items_for_calculation)}")
-                context_parts.append("\nITEM BREAKDOWN:")
-                context_parts.extend(items_for_calculation[:15])  # Show top 15
-                
-                if len(items_for_calculation) > 15:
-                    context_parts.append(f"... and {len(items_for_calculation) - 15} more items")
-            
-            # Add detailed context for all queries
-            context_parts.append("\n=== DETAILED INFORMATION ===")
-            for idx, (chunk, metadata) in enumerate(zip(relevant_chunks[:10], metadatas[:10]), 1):
-                data_type = metadata.get('data_type', 'unknown').upper()
-                granularity = metadata.get('granularity', 'unknown')
-                job_name = metadata.get('job_name', 'Unknown')
-                
-                if granularity == 'row':
-                    row_num = metadata.get('row_number', '?')
-                    label = f"[{data_type} ROW {row_num} - {job_name}]"
+                # Determine cost instruction based on data type
+                if detected_type == 'consumed':
+                    cost_instruction = "Use CONSUMED costs - these are ACTUAL SPENT amounts (the 'Total Consumed' values)"
+                elif detected_type == 'estimate':
+                    cost_instruction = "Use ESTIMATED costs - these are PROJECTED amounts (the 'Estimated Total' values)"
+                elif detected_type == 'mixed':
+                    cost_instruction = "Use the appropriate cost type based on what the user asked for"
                 else:
-                    label = f"[{data_type} SUMMARY - {job_name}]"
+                    cost_instruction = "Use the cost values shown in the data"
                 
-                context_parts.append(f"\n{label}")
-                context_parts.append(chunk[:800])  # Limit chunk size
-            
-            context = "\n".join(context_parts)
-            
-            # Create specialized prompt based on intent
-            if intent['is_sum_query']:
-                instruction = """You are answering a question about TOTAL AMOUNTS/COSTS.
+                instruction = f"""{type_context}
+You are calculating a TOTAL/SUM for construction costs.
+
+🚨 CRITICAL RULES 🚨:
+1. The GRAND TOTAL is already calculated at the top: ${calc_data['total_estimated']:,.2f} (estimated) or ${calc_data['total_consumed']:,.2f} (consumed)
+2. USE THIS GRAND TOTAL - it includes ALL {len(calc_data['items'])} matching items
+3. {cost_instruction}
+4. List ALL items that contribute to this total (show ALL row numbers)
+5. Format ALL amounts as $1,234.56 (commas + 2 decimal places)
+6. DO NOT recalculate - the sum is already correct in the data above
+
+ANSWER FORMAT:
+**Total: $X,XXX.XX** (use the GRAND TOTAL from the data above)
+
+This total includes {len(calc_data['items'])} items:
+- Row #X (identifier): $X,XXX.XX
+- Row #Y (identifier): $X,XXX.XX
+- Row #Z (identifier): $X,XXX.XX
+[list ALL items]
+
+IMPORTANT: List ALL {len(calc_data['items'])} items shown in the breakdown above."""
+
+            elif intent == 'comparison':
+                calc_data = self._prepare_calculation_data(metadatas, relevant_chunks, intent)
+                context = self._format_calculation_context(calc_data)
+                
+                instruction = f"""{type_context}
+You are comparing construction costs/data.
 
 IMPORTANT:
-1. Use the TOTAL AMOUNT shown in the "COST DATA FOR CALCULATION" section
-2. List the individual items that make up this total
-3. Specify the exact dollar amount with proper formatting (e.g., $1,234.56)
-4. If multiple items match, sum them and show the breakdown
-5. Include row numbers when available"""
-            
-            elif intent['is_comparison']:
-                instruction = """You are answering a COMPARISON question.
+1. Use the totals provided in the data above
+2. Show side-by-side comparison
+3. Calculate differences and percentages
+4. Highlight which is higher/lower
+5. Use exact values from data"""
+
+            elif intent == 'list':
+                context = "\n\n".join([
+                    f"[{metadata.get('data_type', '').upper()}] {metadata.get('job_name', 'Unknown')}\n{chunk[:600]}"
+                    for metadata, chunk in zip(metadatas[:50], relevant_chunks[:50])  # Show more for lists
+                ])
+                
+                instruction = f"""{type_context}
+You are listing construction items.
 
 IMPORTANT:
-1. Compare the specific items mentioned in the question
-2. Show amounts side-by-side
-3. Calculate differences and percentages if relevant
-4. Highlight which is higher/lower"""
+1. List ALL {len(metadatas)} relevant items found
+2. Include identifiers (row numbers, cost codes)
+3. Include amounts where available
+4. Organize clearly (use bullet points)"""
             
-            elif intent['is_list_query']:
-                instruction = """You are answering a LIST/SHOW ALL question.
+            elif intent == 'detail':
+                context = "\n\n".join([
+                    f"[{metadata.get('data_type', '').upper()}] {metadata.get('job_name', 'Unknown')}\n{chunk[:800]}"
+                    for metadata, chunk in zip(metadatas[:10], relevant_chunks[:10])
+                ])
+                
+                instruction = f"""{type_context}
+You are providing detailed information about a specific item.
 
 IMPORTANT:
-1. List ALL relevant items found in the data
-2. Include row numbers, descriptions, and amounts
-3. Organize by category or area if applicable
-4. Use bullet points or numbered lists"""
+1. Include all relevant details from the data
+2. Show amounts, quantities, descriptions
+3. Be comprehensive but concise"""
             
-            else:
-                instruction = """You are answering a general construction project question.
+            else:  # search
+                context = "\n\n".join([
+                    f"[{metadata.get('data_type', '').upper()}] {metadata.get('job_name', 'Unknown')}\n{chunk[:800]}"
+                    for metadata, chunk in zip(metadatas[:20], relevant_chunks[:20])
+                ])
+                
+                instruction = f"""{type_context}
+You are answering a construction project question.
 
 IMPORTANT:
-1. Provide specific details from the data
-2. Include row numbers, amounts, descriptions
-3. Be precise and factual"""
+1. Provide specific, factual information from the data
+2. Include relevant identifiers and amounts
+3. Be precise and accurate"""
             
             prompt = f"""{instruction}
 
-Context from construction project data:
 {context}
 
 Question: {question}
-
-Answer the question clearly and specifically based on the data provided above. If amounts are shown, include them in your answer with proper formatting.
 
 Answer:"""
 
@@ -532,29 +876,29 @@ Answer:"""
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a construction project assistant. Answer questions accurately using the provided project data. Always include specific dollar amounts, row numbers, and descriptions when available."
+                        "content": "You are a precise construction project assistant. Use EXACT totals and values from the data provided. The calculations are already done correctly - use those numbers. Never recalculate or estimate. Always format dollar amounts with commas and two decimal places ($1,234.56). When showing breakdowns, list ALL items provided in the data."
                     },
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=1000,
-                temperature=0.1
+                max_tokens=2000,  # Increased for longer lists
+                temperature=0.0
             )
             
             return response.choices[0].message.content.strip()
             
         except Exception as e:
             print(f"❌ Error generating answer: {e}")
-            return f"I found {len(relevant_chunks)} relevant items but encountered an error generating the detailed response: {str(e)}"
+            import traceback
+            traceback.print_exc()
+            return f"I found {len(relevant_chunks)} relevant items but encountered an error generating the answer: {str(e)}"
     
-    # Keep all existing helper methods
+    # Helper methods
     def _build_query_filter(
         self, 
         data_types: Optional[List[str]] = None,
-        row_number: Optional[int] = None,
-        is_allowance: bool = False,
-        has_materials: bool = False
+        row_number: Optional[int] = None
     ) -> Optional[Dict[str, Any]]:
-        """Build ChromaDB query filter based on query intent"""
+        """Build ChromaDB query filter"""
         filters = []
         
         if data_types:
@@ -563,12 +907,6 @@ Answer:"""
         if row_number is not None:
             filters.append({"row_number": row_number})
         
-        if is_allowance:
-            filters.append({"is_allowance": True})
-        
-        if has_materials:
-            filters.append({"has_materials": True})
-        
         if len(filters) == 0:
             return None
         elif len(filters) == 1:
@@ -576,14 +914,8 @@ Answer:"""
         else:
             return {"$and": filters}
     
-    def _detect_allowance_query(self, question: str) -> bool:
-        """Detect if query is asking about allowances"""
-        allowance_keywords = ['allowance', 'allowances', 'contingency', 'contingencies']
-        question_lower = question.lower()
-        return any(keyword in question_lower for keyword in allowance_keywords)
-    
     def _get_display_identifier(self, metadata: Dict[str, Any]) -> str:
-        """Get appropriate display identifier based on document type"""
+        """Get appropriate display identifier"""
         granularity = metadata.get('granularity', 'unknown')
         
         if granularity == 'row':
@@ -603,7 +935,7 @@ Answer:"""
             return categories if categories else 'Summary'
     
     def _format_cost_info(self, metadata: Dict[str, Any], data_type: str) -> Optional[str]:
-        """Format cost information based on data type and granularity"""
+        """Format cost information based on data type"""
         granularity = metadata.get('granularity', 'job')
         
         if data_type == 'estimate' and granularity == 'row':
@@ -639,10 +971,10 @@ Answer:"""
         
         return None
     
-    # Keep all existing methods from original file
+    # Keep ALL existing data processing methods exactly as before
     async def process_firebase_data(self, company_id: Optional[str] = None) -> Dict[str, Any]:
         """Process all Firebase job data with multi-granularity embeddings"""
-        print("🔄 Starting comprehensive Firebase data processing with row-level granularity...")
+        print("🔄 Starting comprehensive Firebase data processing...")
         
         start_time = datetime.now()
         stats = {
@@ -721,7 +1053,7 @@ Answer:"""
                         print(f"✅ Processed {data_type} data for job {job_id}")
                     
                 except Exception as e:
-                    error_msg = f"Error processing {job_dataset.get('data_type', 'unknown')} data for job {job_dataset.get('job_id', 'unknown')}: {str(e)}"
+                    error_msg = f"Error processing {job_dataset.get('data_type', 'unknown')} for job {job_dataset.get('job_id', 'unknown')}: {str(e)}"
                     print(error_msg)
                     stats['errors'].append(error_msg)
             
@@ -763,11 +1095,12 @@ Answer:"""
         ids: List[str], metadatas: List[Dict[str, Any]],
         stats: Dict[str, Any]
     ):
-        """Process estimate data with both job-level and row-level embeddings"""
+        """Process estimate data with job + row level embeddings"""
         job_id = job_dataset.get('job_id', 'unknown')
         company_id = job_dataset.get('company_id', 'unknown')
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         
+        # Job-level summary
         summary_text = self.embedding_service.create_job_text_representation(job_dataset)
         summary_embedding = self.embedding_service.generate_embedding(summary_text)
         summary_metadata = self.embedding_service.create_metadata(job_dataset)
@@ -781,6 +1114,7 @@ Answer:"""
         stats['estimate_datasets'] += 1
         stats['total_datasets_embedded'] += 1
         
+        # Row-level details
         entries = job_dataset.get('entries', [])
         job_context = {
             'job_name': job_dataset.get('job_name', 'Unknown'),
@@ -808,7 +1142,7 @@ Answer:"""
             stats['estimate_rows'] += 1
             stats['total_rows_embedded'] += 1
         
-        print(f"✅ Processed estimate for job {job_id}: 1 summary + {len(entries)} rows")
+        print(f"✅ Processed estimate for {job_id}: 1 summary + {len(entries)} rows")
     
     async def _process_flooring_estimate_multi_granularity(
         self, job_dataset: Dict[str, Any],
@@ -816,11 +1150,12 @@ Answer:"""
         ids: List[str], metadatas: List[Dict[str, Any]],
         stats: Dict[str, Any]
     ):
-        """Process flooring estimate data with both job-level and row-level embeddings"""
+        """Process flooring estimate with job + row level"""
         job_id = job_dataset.get('job_id', 'unknown')
         company_id = job_dataset.get('company_id', 'unknown')
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         
+        # Job-level
         summary_text = self.embedding_service.create_job_text_representation(job_dataset)
         summary_embedding = self.embedding_service.generate_embedding(summary_text)
         summary_metadata = self.embedding_service.create_metadata(job_dataset)
@@ -834,6 +1169,7 @@ Answer:"""
         stats['flooring_estimate_datasets'] += 1
         stats['total_datasets_embedded'] += 1
         
+        # Row-level
         entries = job_dataset.get('entries', [])
         job_context = {
             'job_name': job_dataset.get('job_name', 'Unknown'),
@@ -859,10 +1195,10 @@ Answer:"""
             stats['flooring_estimate_rows'] += 1
             stats['total_rows_embedded'] += 1
         
-        print(f"✅ Processed flooring estimate for job {job_id}: 1 summary + {len(entries)} rows")
+        print(f"✅ Processed flooring for {job_id}: 1 summary + {len(entries)} rows")
     
     async def add_document(self, text: str, metadata: Dict[str, Any]) -> str:
-        """Manually add a document to the collection"""
+        """Manually add document"""
         try:
             embedding = self.embedding_service.generate_embedding(text)
             doc_id = f"manual_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
@@ -876,7 +1212,7 @@ Answer:"""
                 metadatas=[metadata]
             )
             
-            print(f"✅ Manually added document with ID: {doc_id}")
+            print(f"✅ Manually added document: {doc_id}")
             return doc_id
             
         except Exception as e:
@@ -884,7 +1220,7 @@ Answer:"""
             raise
     
     async def get_available_jobs(self) -> List[Dict[str, Any]]:
-        """Get list of available jobs in the system"""
+        """Get list of available jobs"""
         try:
             all_data = self.collection.get()
             jobs_info = {}
@@ -920,11 +1256,11 @@ Answer:"""
             return result
             
         except Exception as e:
-            print(f"Error getting available jobs: {e}")
+            print(f"Error getting jobs: {e}")
             return []
     
     async def get_data_types_summary(self) -> Dict[str, Any]:
-        """Get summary of available data types"""
+        """Get data types summary"""
         try:
             all_data = self.collection.get()
             
@@ -959,11 +1295,11 @@ Answer:"""
             return summary
             
         except Exception as e:
-            print(f"Error getting data types summary: {e}")
+            print(f"Error getting summary: {e}")
             return {'error': str(e)}
     
     async def get_available_cost_codes(self) -> List[str]:
-        """Get list of available cost codes"""
+        """Get available cost codes"""
         try:
             all_data = self.collection.get()
             cost_codes = set()
@@ -987,11 +1323,11 @@ Answer:"""
             return sorted(list(cost_codes))
             
         except Exception as e:
-            print(f"Error getting available cost codes: {e}")
+            print(f"Error getting cost codes: {e}")
             return []
     
     def get_collection_stats(self) -> Dict[str, Any]:
-        """Get statistics about the collection"""
+        """Get collection statistics"""
         try:
             count = self.collection.count()
             sample_data = self.collection.peek(limit=100)
@@ -1007,7 +1343,7 @@ Answer:"""
                     'count': 0, 'total_cost': 0.0, 'total_sale': 0.0,
                     'jobs': set(), 'row_count': 0, 'summary_count': 0
                 },
-                'schedule': {'count': 0, 'total_hours': 0.0, 'total_consumed': 0.0, 'jobs': set()},
+                'schedule': {'count': 0, 'total_hours': 0.0, 'jobs': set()},
                 'unknown': {'count': 0, 'jobs': set()}
             }
             
@@ -1063,13 +1399,13 @@ Answer:"""
             }
             
         except Exception as e:
-            print(f"Error getting collection stats: {e}")
+            print(f"Error getting stats: {e}")
             import traceback
             traceback.print_exc()
             return {'error': str(e)}
     
     def clear_old_documents(self, days_old: int = 7) -> int:
-        """Clear documents older than specified days"""
+        """Clear old documents"""
         try:
             all_data = self.collection.get()
             
@@ -1079,5 +1415,5 @@ Answer:"""
             return len(all_data['ids'])
             
         except Exception as e:
-            print(f"Error clearing old documents: {e}")
+            print(f"Error clearing: {e}")
             return 0
