@@ -13,7 +13,7 @@ from models import DocumentSource
 class QueryClassifier:
     """
     Micro LLM-based query classification using GPT-3.5-turbo
-    Fast, cheap, and highly accurate query understanding
+    Fast, cheap, and highly accurate query understanding with filter extraction
     """
     
     def __init__(self):
@@ -30,7 +30,13 @@ class QueryClassifier:
     "row_number": null or integer,
     "area": null or string,
     "cost_code": null or string,
+    "task_scope": null or string,
     "job_name": null or string
+  },
+  "filter_criteria": {
+    "filter_type": "cost_code" | "area" | "task_scope" | "job_name" | "combination" | "none",
+    "filter_value": null or string,
+    "filter_keywords": [] (list of keywords to match)
   },
   "reasoning": "brief explanation"
 }
@@ -49,44 +55,138 @@ INTENT TYPES:
 - "detail": Getting details (keywords: details, what is, describe, what's in, tell me about)
 - "search": General search/question
 
-CRITICAL RULES:
-1. If user says "spent", "paid", "used", "consumed" = ALWAYS "consumed" data type
-2. If user says "estimate", "estimated", "budget", "budgeted" = ALWAYS "estimate" data type
-3. Past tense (e.g., "what did we spend") = "consumed"
-4. Future/planning tense (e.g., "what will cost") = "estimate"
-5. If asking for BOTH types explicitly = "mixed"
-6. Row numbers: extract any number after "row", "line", "item", "entry"
+FILTER CRITERIA EXTRACTION (CRITICAL):
+1. "cost_code": When asking about specific cost codes or materials/work types
+   - Examples: "cleanup materials", "demolition materials", "203M", "electrical work"
+   - Extract keywords: ["cleanup", "materials", "203M"] or ["electrical", "work"]
+   
+2. "area": When asking about specific project areas/locations
+   - Examples: "Roof Deck", "Kitchen", "Mudroom", "Bathroom"
+   - Extract value: "Roof Deck" or "Kitchen"
+   
+3. "task_scope": When asking about specific tasks/scopes
+   - Examples: "demolition", "painting", "framing", "insulation"
+   - Extract value: "Demolition" or "Painting"
+   
+4. "job_name": When asking about specific jobs/projects
+   - Examples: "Hammond", "Hammond 2508", "Project X"
+   - Extract value: "Hammond" or "Hammond 2508"
+   
+5. "combination": Multiple filters (e.g., "demolition in Kitchen")
+   
+6. "none": No specific filter (e.g., "show me all estimates")
+
+EXTRACTION RULES:
+- Extract the SPECIFIC thing being asked about
+- Include related keywords for fuzzy matching
+- Be generous with keywords to catch variations
+- For cost codes: include both code number AND description words
 
 EXAMPLES:
 
-Question: "What was the total consumed cost for electrical work?"
-Response:
-{
-  "data_type": "consumed",
-  "confidence": 0.98,
-  "intent": "sum",
-  "entities": {"row_number": null, "area": null, "cost_code": "electrical", "job_name": null},
-  "reasoning": "Strong 'consumed' keyword + 'total' indicates sum query on actual spent costs. 'electrical work' is the cost code."
-}
-
-Question: "Show me the estimated cost for plumbing"
+Question: "What is the cleanup material estimate amount for Hammond?"
 Response:
 {
   "data_type": "estimate",
   "confidence": 0.95,
-  "intent": "search",
-  "entities": {"row_number": null, "area": null, "cost_code": "plumbing", "job_name": null},
-  "reasoning": "'estimated cost' clearly indicates projected costs, not actual. Plumbing is the cost code."
+  "intent": "sum",
+  "entities": {
+    "row_number": null,
+    "area": null,
+    "cost_code": "cleanup materials",
+    "task_scope": null,
+    "job_name": "Hammond"
+  },
+  "filter_criteria": {
+    "filter_type": "cost_code",
+    "filter_value": "cleanup materials",
+    "filter_keywords": ["cleanup", "clean up", "clean-up", "materials", "203M"]
+  },
+  "reasoning": "User wants total estimated cost for cleanup materials specifically. Filter by cost code containing cleanup/materials keywords."
 }
 
-Question: "How much did we spend on cleanup?"
+Question: "Total cost for Roof Deck area"
 Response:
 {
-  "data_type": "consumed",
-  "confidence": 0.95,
+  "data_type": "estimate",
+  "confidence": 0.90,
   "intent": "sum",
-  "entities": {"row_number": null, "area": null, "cost_code": "cleanup", "job_name": null},
-  "reasoning": "'spend' (past tense 'did') indicates actual consumed costs. Cleanup is the cost code."
+  "entities": {
+    "row_number": null,
+    "area": "Roof Deck",
+    "cost_code": null,
+    "task_scope": null,
+    "job_name": null
+  },
+  "filter_criteria": {
+    "filter_type": "area",
+    "filter_value": "Roof Deck",
+    "filter_keywords": ["roof deck", "roof", "deck"]
+  },
+  "reasoning": "User wants total for specific area 'Roof Deck'. Filter by area field."
+}
+
+Question: "How much for demolition work in the Kitchen?"
+Response:
+{
+  "data_type": "estimate",
+  "confidence": 0.92,
+  "intent": "sum",
+  "entities": {
+    "row_number": null,
+    "area": "Kitchen",
+    "cost_code": null,
+    "task_scope": "Demolition",
+    "job_name": null
+  },
+  "filter_criteria": {
+    "filter_type": "combination",
+    "filter_value": "demolition in Kitchen",
+    "filter_keywords": ["demolition", "demo", "kitchen"]
+  },
+  "reasoning": "User wants demolition costs specifically in Kitchen area. Need combination filter."
+}
+
+Question: "Show me all Mudroom costs"
+Response:
+{
+  "data_type": "estimate",
+  "confidence": 0.88,
+  "intent": "sum",
+  "entities": {
+    "row_number": null,
+    "area": "Mudroom",
+    "cost_code": null,
+    "task_scope": null,
+    "job_name": null
+  },
+  "filter_criteria": {
+    "filter_type": "area",
+    "filter_value": "Mudroom",
+    "filter_keywords": ["mudroom", "mud room"]
+  },
+  "reasoning": "User wants all costs for Mudroom area. Filter by area."
+}
+
+Question: "What's the total electrical estimate?"
+Response:
+{
+  "data_type": "estimate",
+  "confidence": 0.93,
+  "intent": "sum",
+  "entities": {
+    "row_number": null,
+    "area": null,
+    "cost_code": "electrical",
+    "task_scope": null,
+    "job_name": null
+  },
+  "filter_criteria": {
+    "filter_type": "cost_code",
+    "filter_value": "electrical",
+    "filter_keywords": ["electrical", "electric", "wiring", "electrician"]
+  },
+  "reasoning": "User wants total for electrical work. Filter by cost code containing electrical keywords."
 }
 
 Question: "What's in estimate row 5?"
@@ -95,55 +195,47 @@ Response:
   "data_type": "estimate",
   "confidence": 0.98,
   "intent": "detail",
-  "entities": {"row_number": 5, "area": null, "cost_code": null, "job_name": null},
-  "reasoning": "Explicitly asks for 'estimate row' details. Row number 5 extracted."
+  "entities": {
+    "row_number": 5,
+    "area": null,
+    "cost_code": null,
+    "task_scope": null,
+    "job_name": null
+  },
+  "filter_criteria": {
+    "filter_type": "none",
+    "filter_value": null,
+    "filter_keywords": []
+  },
+  "reasoning": "User wants details of specific row 5. No filtering needed beyond row number."
 }
 
-Question: "Compare consumed vs estimated costs for electrical"
-Response:
-{
-  "data_type": "mixed",
-  "confidence": 0.98,
-  "intent": "comparison",
-  "entities": {"row_number": null, "area": null, "cost_code": "electrical", "job_name": null},
-  "reasoning": "Explicitly compares both consumed AND estimated data types. This requires mixed data."
-}
-
-Question: "What are all the subcontractor costs in the budget?"
+Question: "Show me all estimate rows"
 Response:
 {
   "data_type": "estimate",
-  "confidence": 0.90,
+  "confidence": 0.85,
   "intent": "list",
-  "entities": {"row_number": null, "area": null, "cost_code": "subcontractor", "job_name": null},
-  "reasoning": "'budget' indicates estimate data (planned costs), not consumed. 'what are all' is a list query."
-}
-
-Question: "Total spent on kitchen renovation"
-Response:
-{
-  "data_type": "consumed",
-  "confidence": 0.95,
-  "intent": "sum",
-  "entities": {"row_number": null, "area": "kitchen", "cost_code": "renovation", "job_name": null},
-  "reasoning": "'spent' is past tense indicating consumed/actual costs. Kitchen is the area."
-}
-
-Question: "What will the framing cost?"
-Response:
-{
-  "data_type": "estimate",
-  "confidence": 0.90,
-  "intent": "search",
-  "entities": {"row_number": null, "area": null, "cost_code": "framing", "job_name": null},
-  "reasoning": "'will cost' is future tense indicating estimated/planned costs, not yet spent."
+  "entities": {
+    "row_number": null,
+    "area": null,
+    "cost_code": null,
+    "task_scope": null,
+    "job_name": null
+  },
+  "filter_criteria": {
+    "filter_type": "none",
+    "filter_value": null,
+    "filter_keywords": []
+  },
+  "reasoning": "User wants to see all rows. No specific filtering."
 }
 
 Now analyze this question and return ONLY valid JSON:"""
     
     def classify_query(self, question: str) -> Dict[str, Any]:
         """
-        Use GPT-3.5-turbo to classify query with high accuracy
+        Use GPT-3.5-turbo to classify query with filter extraction
         Returns structured classification in ~300ms
         """
         try:
@@ -159,7 +251,7 @@ Now analyze this question and return ONLY valid JSON:"""
                     {"role": "user", "content": f"{self.classification_prompt}\n\nQuestion: \"{question}\""}
                 ],
                 temperature=0.0,
-                max_tokens=300,
+                max_tokens=400,
                 response_format={"type": "json_object"}
             )
             
@@ -170,6 +262,8 @@ Now analyze this question and return ONLY valid JSON:"""
             print(f"   ✅ Data Type: {classification['data_type']} (confidence: {classification['confidence']:.2f})")
             print(f"   ✅ Intent: {classification['intent']}")
             print(f"   ✅ Entities: {classification['entities']}")
+            print(f"   ✅ Filter: {classification['filter_criteria']['filter_type']} = {classification['filter_criteria']['filter_value']}")
+            print(f"   ✅ Keywords: {classification['filter_criteria']['filter_keywords']}")
             print(f"   ✅ Reasoning: {classification['reasoning']}")
             print(f"   ⚡ Classification time: {elapsed:.0f}ms")
             
@@ -186,7 +280,13 @@ Now analyze this question and return ONLY valid JSON:"""
                     "row_number": None,
                     "area": None,
                     "cost_code": None,
+                    "task_scope": None,
                     "job_name": None
+                },
+                "filter_criteria": {
+                    "filter_type": "none",
+                    "filter_value": None,
+                    "filter_keywords": []
                 },
                 "reasoning": "Fallback due to classification error"
             }
@@ -229,6 +329,86 @@ class RAGService:
             'staging': ['staging', 'scaffold', 'scaffolding']
         }
     
+    def _fuzzy_match(self, text: str, keywords: List[str], threshold: float = 0.6) -> bool:
+        """
+        Fuzzy match text against keywords
+        Returns True if any keyword matches with similarity >= threshold
+        """
+        if not text or not keywords:
+            return False
+        
+        text_lower = text.lower().strip()
+        
+        # First try exact matches or contains
+        for keyword in keywords:
+            keyword_lower = keyword.lower().strip()
+            if keyword_lower in text_lower or text_lower in keyword_lower:
+                return True
+        
+        # Then try fuzzy matching
+        for keyword in keywords:
+            keyword_lower = keyword.lower().strip()
+            similarity = SequenceMatcher(None, text_lower, keyword_lower).ratio()
+            if similarity >= threshold:
+                return True
+        
+        return False
+    
+    def _matches_filter(self, metadata: Dict[str, Any], filter_criteria: Dict[str, Any]) -> bool:
+        """
+        Check if a row matches the filter criteria
+        Supports: cost_code, area, task_scope, job_name, combination
+        """
+        filter_type = filter_criteria.get('filter_type', 'none')
+        
+        if filter_type == 'none':
+            return True
+        
+        filter_keywords = filter_criteria.get('filter_keywords', [])
+        if not filter_keywords:
+            return True
+        
+        # Extract relevant fields from metadata
+        cost_code = metadata.get('cost_code', '') or metadata.get('costCode', '')
+        area = metadata.get('area', '')
+        task_scope = metadata.get('task_scope', '') or metadata.get('taskScope', '')
+        job_name = metadata.get('job_name', '')
+        description = metadata.get('description', '')
+        
+        # Combine all searchable text
+        searchable_text = f"{cost_code} {area} {task_scope} {job_name} {description}".lower()
+        
+        # Check based on filter type
+        if filter_type == 'cost_code':
+            # Match against cost code and description
+            search_fields = [cost_code, description]
+            for field in search_fields:
+                if self._fuzzy_match(field, filter_keywords, threshold=0.5):
+                    return True
+        
+        elif filter_type == 'area':
+            # Match against area field
+            if self._fuzzy_match(area, filter_keywords, threshold=0.7):
+                return True
+        
+        elif filter_type == 'task_scope':
+            # Match against task scope
+            if self._fuzzy_match(task_scope, filter_keywords, threshold=0.7):
+                return True
+        
+        elif filter_type == 'job_name':
+            # Match against job name
+            if self._fuzzy_match(job_name, filter_keywords, threshold=0.7):
+                return True
+        
+        elif filter_type == 'combination':
+            # Match any keyword against any field
+            for keyword in filter_keywords:
+                if keyword.lower() in searchable_text:
+                    return True
+        
+        return False
+    
     def _extract_keywords_from_entities(self, entities: Dict[str, Any]) -> List[str]:
         """Extract searchable keywords from LLM-detected entities"""
         keywords = []
@@ -242,6 +422,9 @@ class RAGService:
         
         if entities.get('area'):
             keywords.append(entities['area'])
+        
+        if entities.get('task_scope'):
+            keywords.append(entities['task_scope'])
         
         if entities.get('job_name'):
             keywords.append(entities['job_name'])
@@ -264,7 +447,7 @@ class RAGService:
         filtered_metas = []
         filtered_ids = []
         
-        print(f"\n🔍 POST-RETRIEVAL FILTERING:")
+        print(f"\n🔍 POST-RETRIEVAL DATA TYPE FILTERING:")
         print(f"   Required data type: {required_data_type}")
         print(f"   Allow other types: {allow_other_types}")
         print(f"   Input documents: {len(documents)}")
@@ -303,11 +486,12 @@ class RAGService:
         self,
         metadatas: List[Dict],
         relevant_chunks: List[str],
-        intent: str
+        intent: str,
+        filter_criteria: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Prepare precise calculation data INCLUDING ALL MATCHING ROWS
-        CRITICAL: This must include EVERY row, even duplicates with same cost code
+        Prepare precise calculation data with SMART FILTERING
+        CRITICAL: Filters rows based on specific criteria (cost code, area, etc.)
         """
         calculation_data = {
             'items': [],
@@ -317,8 +501,22 @@ class RAGService:
             'total_variance': 0.0,
             'row_level_items': [],
             'job_level_items': [],
-            'data_sources': set()
+            'data_sources': set(),
+            'filter_applied': filter_criteria is not None,
+            'filter_summary': '',
+            'filtered_out_count': 0,
+            'included_count': 0
         }
+        
+        # Build filter summary
+        if filter_criteria and filter_criteria.get('filter_type') != 'none':
+            filter_type = filter_criteria.get('filter_type', 'none')
+            filter_value = filter_criteria.get('filter_value', '')
+            filter_keywords = filter_criteria.get('filter_keywords', [])
+            
+            calculation_data['filter_summary'] = f"Filtering by {filter_type}: '{filter_value}' (keywords: {', '.join(filter_keywords)})"
+        else:
+            calculation_data['filter_summary'] = "No filtering applied - including all retrieved rows"
         
         # Track which jobs have row-level data to prevent double counting
         jobs_with_rows = set()
@@ -331,10 +529,11 @@ class RAGService:
             if granularity == 'row' and data_type in ['estimate', 'flooring_estimate']:
                 jobs_with_rows.add(job_id)
         
-        print(f"\n💰 PREPARING CALCULATION DATA:")
+        print(f"\n💰 PREPARING CALCULATION DATA WITH SMART FILTERING:")
+        print(f"   Filter Summary: {calculation_data['filter_summary']}")
         print(f"   Total metadata items to process: {len(metadatas)}")
         
-        # Process EVERY item - DO NOT skip duplicates
+        # Process EVERY item with filtering
         for idx, (metadata, chunk) in enumerate(zip(metadatas, relevant_chunks), 1):
             data_type = metadata.get('data_type', 'unknown')
             granularity = metadata.get('granularity', 'unknown')
@@ -343,7 +542,13 @@ class RAGService:
             
             calculation_data['data_sources'].add(data_type)
             
-            # ESTIMATE ROW LEVEL DATA - Include ALL rows
+            # APPLY FILTER - Skip if doesn't match
+            if filter_criteria and not self._matches_filter(metadata, filter_criteria):
+                calculation_data['filtered_out_count'] += 1
+                print(f"   [{idx}] ❌ FILTERED OUT: {metadata.get('cost_code', metadata.get('area', 'Unknown'))}")
+                continue
+            
+            # ESTIMATE ROW LEVEL DATA - Include matching rows only
             if data_type == 'estimate' and granularity == 'row':
                 row_num = metadata.get('row_number', '?')
                 area = metadata.get('area', '')
@@ -382,10 +587,11 @@ class RAGService:
                 calculation_data['total_budgeted'] += budgeted
                 calculation_data['total_variance'] += variance
                 calculation_data['items'].append(item)
+                calculation_data['included_count'] += 1
                 
-                print(f"   [{idx}] INCLUDED Row #{row_num}: {cost_code} = ${estimated:,.2f}")
+                print(f"   [{idx}] ✅ INCLUDED Row #{row_num}: {cost_code} = ${estimated:,.2f}")
             
-            # FLOORING ESTIMATE ROW LEVEL DATA - Include ALL rows
+            # FLOORING ESTIMATE ROW LEVEL DATA - Include matching rows only
             elif data_type == 'flooring_estimate' and granularity == 'row':
                 row_num = metadata.get('row_number', '?')
                 item_name = metadata.get('item_material_name', '')
@@ -414,8 +620,9 @@ class RAGService:
                 calculation_data['row_level_items'].append(item)
                 calculation_data['total_estimated'] += sale
                 calculation_data['items'].append(item)
+                calculation_data['included_count'] += 1
                 
-                print(f"   [{idx}] INCLUDED Flooring Row #{row_num}: {item_name} = ${sale:,.2f}")
+                print(f"   [{idx}] ✅ INCLUDED Flooring Row #{row_num}: {item_name} = ${sale:,.2f}")
             
             # CONSUMED DATA (job-level only)
             elif data_type == 'consumed' and granularity == 'job':
@@ -432,8 +639,9 @@ class RAGService:
                 calculation_data['job_level_items'].append(item)
                 calculation_data['total_consumed'] += consumed
                 calculation_data['items'].append(item)
+                calculation_data['included_count'] += 1
                 
-                print(f"   [{idx}] INCLUDED Consumed: {job_name} = ${consumed:,.2f}")
+                print(f"   [{idx}] ✅ INCLUDED Consumed: {job_name} = ${consumed:,.2f}")
             
             # JOB-LEVEL ESTIMATES (only if no row data exists - prevents double counting)
             elif granularity == 'job' and job_id not in jobs_with_rows:
@@ -456,12 +664,13 @@ class RAGService:
                     calculation_data['total_budgeted'] += budgeted
                     calculation_data['total_variance'] += variance
                     calculation_data['items'].append(item)
+                    calculation_data['included_count'] += 1
                     
-                    print(f"   [{idx}] INCLUDED Estimate Summary: {job_name} = ${estimated:,.2f}")
+                    print(f"   [{idx}] ✅ INCLUDED Estimate Summary: {job_name} = ${estimated:,.2f}")
         
-        print(f"\n   ✅ TOTAL ITEMS INCLUDED: {len(calculation_data['items'])}")
-        print(f"   ✅ Row-level items: {len(calculation_data['row_level_items'])}")
-        print(f"   ✅ Job-level items: {len(calculation_data['job_level_items'])}")
+        print(f"\n   📊 FILTERING RESULTS:")
+        print(f"   ✅ Items INCLUDED: {calculation_data['included_count']}")
+        print(f"   ❌ Items FILTERED OUT: {calculation_data['filtered_out_count']}")
         print(f"   💵 GRAND TOTAL ESTIMATED: ${calculation_data['total_estimated']:,.2f}")
         print(f"   💵 GRAND TOTAL BUDGETED: ${calculation_data['total_budgeted']:,.2f}")
         print(f"   💵 GRAND TOTAL CONSUMED: ${calculation_data['total_consumed']:,.2f}\n")
@@ -474,10 +683,18 @@ class RAGService:
         context_parts = []
         
         context_parts.append("=" * 80)
-        context_parts.append("PRECISE CALCULATION DATA - ALL MATCHING ROWS INCLUDED")
+        context_parts.append("PRECISE CALCULATION DATA - SMART FILTERED")
         context_parts.append("=" * 80)
         
-        context_parts.append("\n📊 GRAND TOTALS (sum of ALL items below):")
+        # Show filter information
+        if calc_data['filter_applied']:
+            context_parts.append(f"\n🎯 FILTER APPLIED: {calc_data['filter_summary']}")
+            context_parts.append(f"   ✅ {calc_data['included_count']} rows MATCH filter")
+            context_parts.append(f"   ❌ {calc_data['filtered_out_count']} rows filtered out")
+        else:
+            context_parts.append(f"\n🔓 NO FILTER - All {calc_data['included_count']} retrieved rows included")
+        
+        context_parts.append("\n📊 GRAND TOTALS (sum of ONLY filtered/matching items below):")
         
         if calc_data['total_estimated'] > 0 or calc_data['total_budgeted'] > 0:
             context_parts.append(f"  • Total Estimated:  ${calc_data['total_estimated']:,.2f}")
@@ -490,7 +707,7 @@ class RAGService:
         context_parts.append(f"\n  • Number of Items:  {len(calc_data['items'])}")
         context_parts.append(f"  • Data Sources:     {', '.join(calc_data['data_sources'])}")
         
-        # ROW-LEVEL ESTIMATE ITEMS - Show ALL rows
+        # ROW-LEVEL ESTIMATE ITEMS - Show ALL matching rows
         if calc_data['row_level_items']:
             estimate_rows = [item for item in calc_data['row_level_items'] if item['type'] == 'estimate_row']
             flooring_rows = [item for item in calc_data['row_level_items'] if item['type'] == 'flooring_row']
@@ -499,7 +716,8 @@ class RAGService:
                 context_parts.append(f"\n\n{'=' * 80}")
                 context_parts.append(f"📋 ESTIMATE - ALL {len(estimate_rows)} MATCHING ROWS")
                 context_parts.append("=" * 80)
-                context_parts.append("IMPORTANT: Sum ALL rows below for the total")
+                context_parts.append("⚠️  CRITICAL: The grand total above is the SUM of ALL these rows")
+                context_parts.append("⚠️  DO NOT recalculate - USE the grand total provided")
                 
                 for item in estimate_rows:
                     context_parts.append(f"\n🔹 ROW #{item['row_number']}: {item['job_name']}")
@@ -525,7 +743,7 @@ class RAGService:
                 context_parts.append(f"\n\n{'=' * 80}")
                 context_parts.append(f"🏠 FLOORING ESTIMATE - ALL {len(flooring_rows)} MATCHING ROWS")
                 context_parts.append("=" * 80)
-                context_parts.append("IMPORTANT: Sum ALL rows below for the total")
+                context_parts.append("⚠️  CRITICAL: The grand total above is the SUM of ALL these rows")
                 
                 for item in flooring_rows:
                     context_parts.append(f"\n🔹 ROW #{item['row_number']}: {item['job_name']}")
@@ -564,8 +782,7 @@ class RAGService:
     
     async def query(self, question: str, n_results: int = 10, data_types: Optional[List[str]] = None) -> Dict[str, Any]:
         """
-        SUPER SMART query processing with micro LLM classification
-        RETRIEVES ALL MATCHING ROWS for accurate calculations
+        SUPER SMART query processing with micro LLM classification and intelligent filtering
         """
         try:
             print(f"\n{'='*80}")
@@ -579,6 +796,7 @@ class RAGService:
             confidence = classification['confidence']
             intent = classification['intent']
             entities = classification['entities']
+            filter_criteria = classification.get('filter_criteria', {})
             
             # STEP 2: Determine filtering strategy based on confidence
             forced_data_types = None
@@ -606,6 +824,11 @@ class RAGService:
             
             # STEP 3: Extract keywords from entities
             search_keywords = self._extract_keywords_from_entities(entities)
+            
+            # Add filter keywords to search
+            if filter_criteria.get('filter_keywords'):
+                search_keywords.extend(filter_criteria['filter_keywords'][:3])
+            
             print(f"🔑 Search keywords: {search_keywords}")
             
             # Extract row number filter if detected
@@ -662,9 +885,9 @@ class RAGService:
                 'ids': vector_results['ids'][0] if vector_results['ids'] else []
             }
             
-            # STEP 7: POST-FILTER - Critical safety layer
+            # STEP 7: POST-FILTER by data type - Critical safety layer
             if should_filter_strictly and detected_data_type != 'mixed':
-                print(f"\n🚨 APPLYING STRICT POST-FILTER 🚨")
+                print(f"\n🚨 APPLYING STRICT DATA TYPE POST-FILTER 🚨")
                 results = self._filter_results_by_data_type(
                     results['documents'],
                     results['metadatas'],
@@ -727,12 +950,13 @@ class RAGService:
             print(f"📈 Data types in results: {data_types_found}")
             print(f"📈 Row-level documents: {len([m for m in metadatas if m.get('granularity') == 'row'])}")
             
-            # STEP 8: Generate intelligent answer with classification awareness
+            # STEP 8: Generate intelligent answer with classification awareness and filtering
             answer = await self._generate_intelligent_answer(
                 question=question,
                 classification=classification,
                 relevant_chunks=relevant_chunks,
-                metadatas=metadatas
+                metadatas=metadatas,
+                filter_criteria=filter_criteria
             )
             
             return {
@@ -757,9 +981,10 @@ class RAGService:
         question: str,
         classification: Dict[str, Any],
         relevant_chunks: List[str],
-        metadatas: List[Dict]
+        metadatas: List[Dict],
+        filter_criteria: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Generate answer with classification-aware context"""
+        """Generate answer with classification-aware context and filtering"""
         
         try:
             intent = classification['intent']
@@ -771,7 +996,12 @@ class RAGService:
             
             # Build instruction based on intent
             if intent == 'sum':
-                calc_data = self._prepare_calculation_data(metadatas, relevant_chunks, intent)
+                calc_data = self._prepare_calculation_data(
+                    metadatas, 
+                    relevant_chunks, 
+                    intent,
+                    filter_criteria=filter_criteria
+                )
                 context = self._format_calculation_context(calc_data)
                 
                 # Determine cost instruction based on data type
@@ -784,30 +1014,51 @@ class RAGService:
                 else:
                     cost_instruction = "Use the cost values shown in the data"
                 
+                # Build filter awareness
+                if calc_data['filter_applied']:
+                    filter_awareness = f"""
+🎯 FILTER WAS APPLIED: {calc_data['filter_summary']}
+- {calc_data['included_count']} rows MATCHED the filter and are included in the total
+- {calc_data['filtered_out_count']} rows did NOT match and were excluded
+"""
+                else:
+                    filter_awareness = f"No specific filter was applied. All {calc_data['included_count']} retrieved rows are included."
+                
                 instruction = f"""{type_context}
 You are calculating a TOTAL/SUM for construction costs.
 
+{filter_awareness}
+
 🚨 CRITICAL RULES 🚨:
 1. The GRAND TOTAL is already calculated at the top: ${calc_data['total_estimated']:,.2f} (estimated) or ${calc_data['total_consumed']:,.2f} (consumed)
-2. USE THIS GRAND TOTAL - it includes ALL {len(calc_data['items'])} matching items
+2. USE THIS EXACT GRAND TOTAL - it's the sum of ONLY the {calc_data['included_count']} filtered/matching items
 3. {cost_instruction}
-4. List ALL items that contribute to this total (show ALL row numbers)
+4. List ALL {calc_data['included_count']} items that contribute to this total (show ALL row numbers)
 5. Format ALL amounts as $1,234.56 (commas + 2 decimal places)
 6. DO NOT recalculate - the sum is already correct in the data above
+7. If a filter was applied, mention which rows matched the filter
 
 ANSWER FORMAT:
-**Total: $X,XXX.XX** (use the GRAND TOTAL from the data above)
+**Total [describe what was filtered]: $X,XXX.XX** (use the GRAND TOTAL from the data above)
 
-This total includes {len(calc_data['items'])} items:
+This total includes {calc_data['included_count']} matching items:
 - Row #X (identifier): $X,XXX.XX
 - Row #Y (identifier): $X,XXX.XX
 - Row #Z (identifier): $X,XXX.XX
-[list ALL items]
+[list ALL {calc_data['included_count']} items]
 
-IMPORTANT: List ALL {len(calc_data['items'])} items shown in the breakdown above."""
+IMPORTANT: 
+- Use the EXACT grand total shown above: ${calc_data['total_estimated']:,.2f}
+- List ALL {calc_data['included_count']} items shown in the breakdown above
+- If filter was applied, acknowledge it (e.g., "Total for cleanup materials: $X,XXX.XX")"""
 
             elif intent == 'comparison':
-                calc_data = self._prepare_calculation_data(metadatas, relevant_chunks, intent)
+                calc_data = self._prepare_calculation_data(
+                    metadatas, 
+                    relevant_chunks, 
+                    intent,
+                    filter_criteria=filter_criteria
+                )
                 context = self._format_calculation_context(calc_data)
                 
                 instruction = f"""{type_context}
@@ -876,7 +1127,7 @@ Answer:"""
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a precise construction project assistant. Use EXACT totals and values from the data provided. The calculations are already done correctly - use those numbers. Never recalculate or estimate. Always format dollar amounts with commas and two decimal places ($1,234.56). When showing breakdowns, list ALL items provided in the data."
+                        "content": "You are a precise construction project assistant. Use EXACT totals and values from the data provided. The calculations are already done correctly - use those numbers. Never recalculate or estimate. Always format dollar amounts with commas and two decimal places ($1,234.56). When showing breakdowns, list ALL items provided in the data. When filtering was applied, acknowledge it in your answer."
                     },
                     {"role": "user", "content": prompt}
                 ],
