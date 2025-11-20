@@ -1123,7 +1123,7 @@ Question: {question}
 Answer:"""
 
             response = self.openai_client.chat.completions.create(
-                model="gpt-4",
+                model="gpt-4-turbo-preview",
                 messages=[
                     {
                         "role": "system",

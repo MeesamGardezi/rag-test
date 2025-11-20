@@ -135,17 +135,19 @@ async def search_documents_enhanced(query: EnhancedQueryRequest):
             n_results=query.n_results or 10,
             data_types=query.data_types
         )
-        return {
-            "question": query.question,
-            "answer": result["answer"],
-            "sources": result["sources"],
-            "relevant_chunks": result["chunks"],
-            "data_types_found": result.get("data_types_found", []),
-            "granularities_found": result.get("granularities_found", []),
-            "row_numbers_found": result.get("row_numbers_found", []),
-            "document_types_found": result.get("document_types_found", []),
-            "total_results": len(result["chunks"])
-        }
+        # return {
+        #     "question": query.question,
+        #     "answer": result["answer"],
+        #     "sources": result["sources"],
+        #     "relevant_chunks": result["chunks"],
+        #     "data_types_found": result.get("data_types_found", []),
+        #     "granularities_found": result.get("granularities_found", []),
+        #     "row_numbers_found": result.get("row_numbers_found", []),
+        #     "document_types_found": result.get("document_types_found", []),
+        #     "total_results": len(result["chunks"])
+        # }
+        return {"answer": result["answer"]}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
